@@ -51,19 +51,35 @@ class GroupDecoder(params: GroupDecoderParams) extends Module {
 
     // 输出权重计数器
     val outputCounter = RegInit(0.U(log2Ceil(params.groupSize + 1).W))
-    val outputCounterIsFull = outputCounter === params.groupSize.U
 
+    val grCoreDone_latch = RegInit(false.B)
+    val decodedWeight_reg = Reg(UInt(4.W))
+    val handshake_fired = grCoreDone_latch && io.decodedWeights.ready
+
+    // 当grCore完成时, 置位锁存器
+    when(grCore.io.done) {
+        grCoreDone_latch := true.B
+        decodedWeight_reg := deltaReconstructor.io.quantized_weight
+    }
+    // 当握手成功时, 复位锁存器
+    when(handshake_fired) {
+        grCoreDone_latch := false.B
+    }
     // 默认输出
     io.done := false.B
     io.decodedWeights.bits := 0.U
     io.decodedWeights.valid := false.B
     io.compressedStream.ready := false.B
+    bitstreamReader.io.request.valid := false.B
+    bitstreamReader.io.request.bits := 0.U
+    grCore.io.start := false.B
 
     // 状态机逻辑
     switch(state) {
         is(State.sIDLE) {
             when(io.start) {
                 outputCounter := 0.U
+                grCoreDone_latch := false.B
                 when(io.isFallback) {
                     state := State.sFALLBACK
                 }.otherwise {
@@ -75,12 +91,14 @@ class GroupDecoder(params: GroupDecoderParams) extends Module {
 
         is(State.sDECODE) {
             // 核心解码循环: 当GRCore完成一个值的解码, 并且下游可以接受我们的输出时
-            when(grCore.io.done && io.decodedWeights.ready) {
+            when(handshake_fired) {
                 outputCounter := outputCounter + 1.U
-                when(outputCounterIsFull) {
+
+                when(outputCounter === (params.groupSize - 1).U) {
                     state := State.sDONE
                 }.otherwise {
-                    grCore.io.start := true.B // 启动下一个解码
+                    // 只有在当前数据被成功接收后, 才启动下一个解码
+                    grCore.io.start := true.B
                 }
             }
         }
@@ -91,10 +109,10 @@ class GroupDecoder(params: GroupDecoderParams) extends Module {
             bitstreamReader.io.request.bits := 4.U
 
             // 当BitstreamReader准备好数据并且下游可以接受时
-            when(bitstreamReader.io.request.valid && io.decodedWeights.ready) {
+            when(bitstreamReader.io.bits_out.valid && io.decodedWeights.ready) {
                 outputCounter := outputCounter + 1.U // 输出计数器+1
 
-                when(outputCounterIsFull) {
+                when(outputCounter === (params.groupSize - 1).U) {
                     state := State.sDONE
                 }
             }
@@ -102,9 +120,7 @@ class GroupDecoder(params: GroupDecoderParams) extends Module {
 
         is(State.sDONE) {
             io.done := true.B
-            when(!io.start) {
-                state := State.sIDLE
-            }
+            state := State.sIDLE
         }
     }
 
@@ -124,16 +140,16 @@ class GroupDecoder(params: GroupDecoderParams) extends Module {
     deltaReconstructor.io.zp := io.zp
 
     // 连接输出通路
-    io.decodedWeights.valid := false.B
-    io.decodedWeights.bits := 0.U
-
     when(state === State.sDECODE) {
-        // 解码模式下,输出有效性由grCore.done决定
-        io.decodedWeights.valid := grCore.io.done
-        io.decodedWeights.bits := deltaReconstructor.io.quantized_weight
+        // 解码模式下, 输出有效性由grCore.done决定
+        io.decodedWeights.valid := grCoreDone_latch
+        io.decodedWeights.bits := decodedWeight_reg
     }.elsewhen(state === State.sFALLBACK) {
-        // 回退模式下,输出有效性由bitstreamReader.bits_out.valid决定
+        // 回退模式下, 输出有效性由bitstreamReader.bits_out.valid决定
         io.decodedWeights.valid := bitstreamReader.io.bits_out.valid
         io.decodedWeights.bits := bitstreamReader.io.bits_out.bits
+    }.otherwise {
+        io.decodedWeights.valid := false.B
+        io.decodedWeights.bits := 0.U
     }
 }

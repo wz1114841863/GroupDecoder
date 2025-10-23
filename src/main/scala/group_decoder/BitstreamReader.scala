@@ -27,9 +27,9 @@ case class BitstreamReaderParams(
 class BitstreamReaderIO(params: BitstreamReaderParams) extends Bundle {
     // 输入数据流
     val inputStream = Flipped(Decoupled(UInt(params.streamWidth.W)))
-    // 来自FSM的读取请求
+    // 来自FSM的读取请求, 请求读取N比特 (N可以到streamWidth)
     val request = Flipped(Valid(UInt(log2Ceil(params.streamWidth + 1).W)))
-    // 输出至FSM的数据
+    // 输出至FSM的数据, 将请求的N比特对齐到最低位输出
     val bits_out = Valid(UInt(params.streamWidth.W))
 }
 
@@ -69,12 +69,13 @@ class BitstreamReader(params: BitstreamReaderParams) extends Module {
 
         // 从shifter的最高位部分取出所需的比特
         val result = shifter >> (validBits - requestedBits)
-        io.bits_out.bits := result(params.streamWidth - 1, 0)
+        io.bits_out.bits := result
 
         // 更新shifter和validBits
         // 注意, 更新时要考虑有数据输入的情况
         val nextValidBits = validBits - requestedBits
-        val nextShifter = shifter << requestedBits
+        val mask = (1.U << nextValidBits) - 1.U
+        val nextShifter = shifter & mask
 
         when(io.inputStream.fire) { // 如果在消耗比特的同时,又填充了新数据
             validBits := nextValidBits + params.streamWidth.U

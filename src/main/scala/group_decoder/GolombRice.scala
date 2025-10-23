@@ -16,16 +16,16 @@ class GRCoreIO(param: GroupDecoderParams) extends Bundle {
     val reader_resp = Flipped(Valid(UInt(param.streamWidth.W)))
 
     // 输出
-    val decoded_val = Output(UInt(16.W)) // TODO: 输出解码后的无符号增量
+    val decoded_val = Output(UInt(16.W)) // TODO: 输出解码后的无符号增量, 宽度可能需要改一下
 }
 
 class GRCore(param: GroupDecoderParams) extends Module {
     val io = IO(new GRCoreIO(param))
     // 内部状态定义
     object State extends ChiselEnum {
-        val sIdle, sDecodeQ, sDecodeR, sDone = Value
+        val sIDLE, sDECODE_Q, sDECODE_R, sDONE = Value
     }
-    val state = RegInit(State.sIdle)
+    val state = RegInit(State.sIDLE)
 
     // 内部寄存器
     val qCounter = RegInit(0.U(8.W)) // 商计数器
@@ -40,15 +40,15 @@ class GRCore(param: GroupDecoderParams) extends Module {
 
     // 状态机逻辑
     switch(state) {
-        is(State.sIdle) {
+        is(State.sIDLE) {
             when(io.start) {
-                state := State.sDecodeQ
+                state := State.sDECODE_Q
                 qCounter := 0.U // 重置商计数器
                 k_reg := io.k // 锁存k值
             }
         }
 
-        is(State.sDecodeQ) {
+        is(State.sDECODE_Q) {
             // 请求1个比特来解码商
             io.reader_req.valid := true.B
             io.reader_req.bits := 1.U
@@ -56,14 +56,14 @@ class GRCore(param: GroupDecoderParams) extends Module {
             when(io.reader_resp.valid) { // BitstreamReader返回了1个比特
                 when(io.reader_resp.bits === 1.U) { // 读到'1'
                     qCounter := qCounter + 1.U
-                    // 保持在 sDecodeQ 状态继续读下一位
+                    // 保持在 sDECODE_Q 状态继续读下一位
                 }.otherwise { // 读到'0',商解码结束
-                    state := State.sDecodeR
+                    state := State.sDECODE_R
                 }
             }
         }
 
-        is(State.sDecodeR) {
+        is(State.sDECODE_R) {
             val k_val = k_reg + 1.U // 实际的k值是输入(0/1/2) + 1
             // 请求k个比特来解码余数
             io.reader_req.valid := true.B
@@ -71,13 +71,13 @@ class GRCore(param: GroupDecoderParams) extends Module {
 
             when(io.reader_resp.valid) { // BitstreamReader返回了k个比特
                 rValue := io.reader_resp.bits
-                state := State.sDone
+                state := State.sDONE
             }
         }
 
-        is(State.sDone) {
+        is(State.sDONE) {
             io.done := true.B
-            state := State.sIdle
+            state := State.sIDLE
         }
     }
 
