@@ -2,85 +2,97 @@ package group_decoder
 
 import chisel3._
 import chisel3.util._
-import group_decoder.GroupDecoderParams
 
-// Golomb-Rice解码核心模块
-class GRCoreIO(param: GroupDecoderParams) extends Bundle {
-    // 控制信号
+case class GolombRiceCoreParams(
+    maxK: Int = 3, // k 的最大值为 3
+    maxQuotient: Int = 31, // 商 q 的最大值设为 31 (5 bits)
+    outputWidth: Int = 16 // unsigned_delta 的位宽为 16
+)
+
+class GolombRiceCoreIO(params: GolombRiceCoreParams) extends Bundle {
     val start = Input(Bool())
-    val k = Input(UInt(2.W)) // 0 -> k=1, 1 -> k=2, 2 -> k=3
-    val done = Output(Bool())
+    // k_reg 的位宽现在是 log2Ceil(3+1) = 2 bits
+    val k = Input(UInt(log2Ceil(params.maxK + 1).W))
 
-    // 与BitstreamReader交互的接口
-    val reader_req = Valid(UInt(log2Ceil(param.streamWidth + 1).W))
-    val reader_resp = Flipped(Valid(UInt(param.streamWidth.W)))
+    // bits_in 的位宽是 k 的最大可能值
+    val bits_in = Flipped(Decoupled(UInt(params.maxK.W)))
+    val request_bits = Valid(UInt(log2Ceil(params.maxK + 1).W))
 
-    // 输出
-    val decoded_val = Output(UInt(16.W)) // TODO: 输出解码后的无符号增量, 宽度可能需要改一下
+    // 输出端口现在是 5 bits
+    val unsigned_delta = Decoupled(UInt(params.outputWidth.W))
+    val busy = Output(Bool())
 }
 
-class GRCore(param: GroupDecoderParams) extends Module {
-    val io = IO(new GRCoreIO(param))
-    // 内部状态定义
-    object State extends ChiselEnum {
-        val sIDLE, sDECODE_Q, sDECODE_R, sDONE = Value
-    }
-    val state = RegInit(State.sIDLE)
+class GolombRiceCore(params: GolombRiceCoreParams) extends Module {
+    val io = IO(new GolombRiceCoreIO(params))
 
-    // 内部寄存器
-    val qCounter = RegInit(0.U(8.W)) // 商计数器
-    val rValue = RegInit(0.U(16.W)) // 余数
-    val k_reg = RegInit(0.U(2.W)) // k值寄存器
+    val sIdle :: sDecodeQuotient :: sDecodeRemainder :: sCalculate :: Nil =
+        Enum(4)
+    val state = RegInit(sIdle)
 
-    // 默认输出
-    io.done := false.B
-    io.reader_req.valid := false.B
-    io.reader_req.bits := 0.U
-    io.decoded_val := 0.U
+    // 内部寄存器的位宽也随之优化
+    val k_reg = Reg(UInt(log2Ceil(params.maxK + 1).W))
+    val q_reg = Reg(UInt(log2Ceil(params.maxQuotient + 1).W))
+    val r_reg = Reg(UInt(params.maxK.W))
 
-    // 状态机逻辑
+    // Default outputs
+    io.request_bits.valid := false.B
+    io.request_bits.bits := 0.U
+    io.unsigned_delta.valid := false.B
+    io.unsigned_delta.bits := 0.U
+    io.busy := (state =/= sIdle)
+
+    // 我什么时候准备好接收数据?当且仅当我处于需要数据的状态时.
+    io.bits_in.ready := (state === sDecodeQuotient || state === sDecodeRemainder)
+
+    // FSM logic
     switch(state) {
-        is(State.sIDLE) {
+        is(sIdle) {
             when(io.start) {
-                state := State.sDECODE_Q
-                qCounter := 0.U // 重置商计数器
-                k_reg := io.k // 锁存k值
+                state := sDecodeQuotient
+                k_reg := io.k
+                q_reg := 0.U // Reset quotient for the new value
             }
         }
 
-        is(State.sDECODE_Q) {
-            // 请求1个比特来解码商
-            io.reader_req.valid := true.B
-            io.reader_req.bits := 1.U
+        is(sDecodeQuotient) {
+            // Always request 1 bit to read the unary-coded quotient
+            io.request_bits.valid := true.B
+            io.request_bits.bits := 1.U
 
-            when(io.reader_resp.valid) { // BitstreamReader返回了1个比特
-                when(io.reader_resp.bits === 1.U) { // 读到'1'
-                    qCounter := qCounter + 1.U
-                    // 保持在 sDECODE_Q 状态继续读下一位
-                }.otherwise { // 读到'0',商解码结束
-                    state := State.sDECODE_R
+            when(io.bits_in.fire) {
+                when(io.bits_in.bits === 1.U) {
+                    // Got a '1', increment quotient and stay in this state
+                    q_reg := q_reg + 1.U
+                    state := sDecodeQuotient // Stay
+                }.otherwise {
+                    // Got a '0', quotient is done, move to read remainder
+                    state := sDecodeRemainder
                 }
             }
         }
 
-        is(State.sDECODE_R) {
-            val k_val = k_reg + 1.U // 实际的k值是输入(0/1/2) + 1
-            // 请求k个比特来解码余数
-            io.reader_req.valid := true.B
-            io.reader_req.bits := k_val
+        is(sDecodeRemainder) {
+            // Request k bits for the remainder
+            io.request_bits.valid := true.B
+            io.request_bits.bits := k_reg
 
-            when(io.reader_resp.valid) { // BitstreamReader返回了k个比特
-                rValue := io.reader_resp.bits
-                state := State.sDONE
+            when(io.bits_in.fire) {
+                r_reg := io.bits_in.bits
+                state := sCalculate
             }
         }
 
-        is(State.sDONE) {
-            io.done := true.B
-            state := State.sIDLE
+        is(sCalculate) {
+            // Calculate final value and present it on the output
+            val result = (q_reg << k_reg) | r_reg
+            io.unsigned_delta.valid := true.B
+            io.unsigned_delta.bits := result
+
+            // Handshake with the downstream module
+            when(io.unsigned_delta.ready) {
+                state := sIdle // Data accepted, return to idle
+            }
         }
     }
-
-    // 组合逻辑计算最终输出值
-    io.decoded_val := (qCounter << (k_reg + 1.U)) | rValue
 }

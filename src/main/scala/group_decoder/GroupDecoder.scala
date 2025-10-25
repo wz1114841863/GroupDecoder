@@ -3,153 +3,153 @@ package group_decoder
 import chisel3._
 import chisel3.util._
 
-/** GroupDecoder Parameters 模块的参数化配置
-  * @param groupSize
-  *   解码组的权重数量, 例如512
-  * @param streamWidth
-  *   输入比特流的宽度, 必须是streamWidth的整数倍, 例如32
-  */
-case class GroupDecoderParams(groupSize: Int, streamWidth: Int)
-
-// GroupDecoder IO 接口定义
-class GroupDecoderIO(params: GroupDecoderParams) extends Bundle {
-    // 控制信号
-    val start = Input(Bool())
-    val done = Output(Bool())
-
-    // 输入比特流
-    val compressedStream = Flipped(Decoupled(UInt(params.streamWidth.W)))
-    val zp = Input(UInt(4.W))
-    val best_k = Input(UInt(2.W)) // 0 -> k=1, 1 -> k=2, 2 -> k=3
-    val isFallback = Input(Bool())
-
-    // 输出解码结果
-    val decodedWeights = Decoupled(UInt(4.W))
+case class GroupDecoderParams(
+    groupSize: Int = 32,
+    nBits: Int = 4,
+    kOptions: Seq[Int] = Seq(1, 2, 3),
+    zpWidth: Int = 4,
+    brp: BitstreamReaderParams =
+        BitstreamReaderParams(streamWidth = 32, bufferWidth = 64),
+    gcp: GolombRiceCoreParams =
+        GolombRiceCoreParams(maxK = 3, maxQuotient = 31, outputWidth = 5)
+) {
+    val numKChoices: Int = kOptions.size
+    val flagBits: Int = log2Ceil(numKChoices + 1)
+    val flagToKMap: Seq[(UInt, UInt)] = kOptions.zipWithIndex.map {
+        case (k, i) => i.U -> k.U
+    }
+    val fallbackFlagVal: Int = numKChoices
 }
 
-// GroupDecoder 模块定义
+class GroupDecoderIO(params: GroupDecoderParams) extends Bundle {
+    val start = Input(Bool())
+    val zero_point = Input(UInt(params.zpWidth.W))
+    val inputStream = Flipped(Decoupled(UInt(params.brp.streamWidth.W)))
+    val quantized_weight = Decoupled(UInt(params.nBits.W))
+    val busy = Output(Bool())
+    val done = Output(Bool())
+}
+
 class GroupDecoder(params: GroupDecoderParams) extends Module {
     val io = IO(new GroupDecoderIO(params))
 
-    val bitstreamReader = Module(
-      new BitstreamReader(
-        BitstreamReaderParams(params.streamWidth, params.streamWidth * 2)
-      )
-    )
+    val bitReader = Module(new BitstreamReader(params.brp))
+    val golombCore = Module(new GolombRiceCore(params.gcp))
+    val deltaRecon = Module(new DeltaReconstructor())
 
-    val grCore = Module(
-      new GRCore(GroupDecoderParams(params.groupSize, params.streamWidth))
-    )
+    val sIdle :: sReadFlag :: sDecode :: sDone :: Nil = Enum(4)
+    val state = RegInit(sIdle)
 
-    val deltaReconstructor = Module(new DeltaReconstructor)
+    val weights_decoded_reg = RegInit(0.U(log2Ceil(params.groupSize + 1).W))
+    val is_raw_path_reg = RegInit(false.B)
+    val k_reg = Reg(UInt(log2Ceil(params.gcp.maxK + 1).W))
 
-    // FSM 状态定义
-    object State extends ChiselEnum {
-        val sIDLE, sDECODE, sFALLBACK, sDONE = Value
-    }
-    val state = RegInit(State.sIDLE)
-
-    // 输出权重计数器
-    val outputCounter = RegInit(0.U(log2Ceil(params.groupSize + 1).W))
-
-    val grCoreDone_latch = RegInit(false.B)
-    val decodedWeight_reg = Reg(UInt(4.W))
-    val handshake_fired = grCoreDone_latch && io.decodedWeights.ready
-
-    // 当grCore完成时, 置位锁存器
-    when(grCore.io.done) {
-        grCoreDone_latch := true.B
-        decodedWeight_reg := deltaReconstructor.io.quantized_weight
-    }
-    // 当握手成功时, 复位锁存器
-    when(handshake_fired) {
-        grCoreDone_latch := false.B
-    }
-    // 默认输出
+    // Default assignments
+    io.busy := (state =/= sIdle)
     io.done := false.B
-    io.decodedWeights.bits := 0.U
-    io.decodedWeights.valid := false.B
-    io.compressedStream.ready := false.B
-    bitstreamReader.io.request.valid := false.B
-    bitstreamReader.io.request.bits := 0.U
-    grCore.io.start := false.B
+    bitReader.io.request.valid := false.B
+    bitReader.io.request.bits := 0.U
+    golombCore.io.start := false.B
+    golombCore.io.k := 0.U
 
-    // 状态机逻辑
-    switch(state) {
-        is(State.sIDLE) {
-            when(io.start) {
-                outputCounter := 0.U
-                grCoreDone_latch := false.B
-                when(io.isFallback) {
-                    state := State.sFALLBACK
-                }.otherwise {
-                    state := State.sDECODE
-                    grCore.io.start := true.B // 启动 Golomb-Rice 解码
-                }
-            }
-        }
+    // --- Static Connections ---
+    bitReader.io.inputStream <> io.inputStream
+    deltaRecon.io.zp := io.zero_point
 
-        is(State.sDECODE) {
-            // 核心解码循环: 当GRCore完成一个值的解码, 并且下游可以接受我们的输出时
-            when(handshake_fired) {
-                outputCounter := outputCounter + 1.U
+    // --- Dynamic Connections based on Path ---
 
-                when(outputCounter === (params.groupSize - 1).U) {
-                    state := State.sDONE
-                }.otherwise {
-                    // 只有在当前数据被成功接收后, 才启动下一个解码
-                    grCore.io.start := true.B
-                }
-            }
-        }
+    when(is_raw_path_reg) {
+        // --- RAW PATH WIRING ---
+        // Final output is connected to BitReader
+        io.quantized_weight.valid := bitReader.io.bits_out.valid && (state === sDecode)
+        io.quantized_weight.bits := bitReader.io.bits_out.bits
+        bitReader.io.bits_out.ready := io.quantized_weight.ready && (state === sDecode)
 
-        is(State.sFALLBACK) {
-            // 在回退模式下,我们直接向BitstreamReader请求4个比特
-            bitstreamReader.io.request.valid := true.B
-            bitstreamReader.io.request.bits := 4.U
+        // The Golomb pipeline is idle. Its inputs must be given default values.
+        golombCore.io.bits_in.ready := false.B // We are not consuming from Golomb path
+        deltaRecon.io.unsigned_delta.valid := false.B
+        deltaRecon.io.unsigned_delta.bits := 0.U
+        // ** THE FIX IS HERE **
+        // Give the unused module's input a defined value.
+        deltaRecon.io.quantized_weight.ready := false.B
 
-            // 当BitstreamReader准备好数据并且下游可以接受时
-            when(bitstreamReader.io.bits_out.valid && io.decodedWeights.ready) {
-                outputCounter := outputCounter + 1.U // 输出计数器+1
-
-                when(outputCounter === (params.groupSize - 1).U) {
-                    state := State.sDONE
-                }
-            }
-        }
-
-        is(State.sDONE) {
-            io.done := true.B
-            state := State.sIDLE
-        }
-    }
-
-    // 数据通路连接
-    bitstreamReader.io.inputStream <> io.compressedStream
-    grCore.io.k := io.best_k
-
-    // 连接 BitstreamReader <-> GR_Core
-    // GR_Core的请求直接传给BitstreamReader
-    when(state === State.sDECODE) {
-        bitstreamReader.io.request <> grCore.io.reader_req
-    }
-    grCore.io.reader_resp <> bitstreamReader.io.bits_out
-
-    // 连接 GR_Core -> DeltaReconstructor
-    deltaReconstructor.io.unsigned_delta := grCore.io.decoded_val
-    deltaReconstructor.io.zp := io.zp
-
-    // 连接输出通路
-    when(state === State.sDECODE) {
-        // 解码模式下, 输出有效性由grCore.done决定
-        io.decodedWeights.valid := grCoreDone_latch
-        io.decodedWeights.bits := decodedWeight_reg
-    }.elsewhen(state === State.sFALLBACK) {
-        // 回退模式下, 输出有效性由bitstreamReader.bits_out.valid决定
-        io.decodedWeights.valid := bitstreamReader.io.bits_out.valid
-        io.decodedWeights.bits := bitstreamReader.io.bits_out.bits
     }.otherwise {
-        io.decodedWeights.valid := false.B
-        io.decodedWeights.bits := 0.U
+        // --- GOLOMB PATH WIRING ---
+        // Connect the full pipeline: BitReader -> GolombCore -> DeltaRecon -> Final Output
+        golombCore.io.bits_in <> bitReader.io.bits_out
+        deltaRecon.io.unsigned_delta <> golombCore.io.unsigned_delta
+        io.quantized_weight <> deltaRecon.io.quantized_weight
+    }
+
+    // --- FSM LOGIC ---
+    switch(state) {
+        is(sIdle) {
+            weights_decoded_reg := 0.U
+            when(io.start) {
+                state := sReadFlag
+            }
+        }
+
+        is(sReadFlag) {
+            bitReader.io.request.valid := true.B
+            bitReader.io.request.bits := params.flagBits.U
+
+            // FSM itself is the consumer of the flag, so it's always ready.
+            bitReader.io.bits_out.ready := true.B
+
+            when(bitReader.io.bits_out.fire) {
+                val flag = bitReader.io.bits_out.bits
+                when(flag === params.fallbackFlagVal.U) {
+                    is_raw_path_reg := true.B
+                }.otherwise {
+                    is_raw_path_reg := false.B
+                    k_reg := MuxLookup(flag, 0.U)(params.flagToKMap)
+                }
+                state := sDecode
+            }
+        }
+
+        is(sDecode) {
+            when(is_raw_path_reg) {
+                bitReader.io.request.valid := true.B
+                bitReader.io.request.bits := params.nBits.U
+            }.otherwise {
+                when(!golombCore.io.busy) {
+                    golombCore.io.start := true.B
+                    golombCore.io.k := k_reg
+                }
+            }
+
+            when(io.quantized_weight.fire) {
+                weights_decoded_reg := weights_decoded_reg + 1.U
+
+                when(weights_decoded_reg + 1.U === params.groupSize.U) {
+                    state := sDone
+                }.otherwise {
+                    state := sDecode
+                }
+            }
+        }
+
+        is(sDone) {
+            io.done := true.B
+            state := sIdle
+        }
+    }
+
+    when(RegNext(io.start, false.B) || io.busy) {
+        printf(p"====================================================\n")
+        printf(
+          p"State: ${state} | Decoded: ${weights_decoded_reg} | Is_Raw: ${is_raw_path_reg}\n"
+        )
+        printf(
+          p"  [BitReader Out] valid: ${bitReader.io.bits_out.valid}, ready: ${bitReader.io.bits_out.ready}, bits: ${bitReader.io.bits_out.bits}\n"
+        )
+        printf(
+          p"  [GolombCore In] valid: ${golombCore.io.bits_in.valid}, ready: ${golombCore.io.bits_in.ready}\n"
+        )
+        printf(
+          p"  [Final Out]     valid: ${io.quantized_weight.valid}, ready: ${io.quantized_weight.ready}, bits: ${io.quantized_weight.bits}\n"
+        )
     }
 }
