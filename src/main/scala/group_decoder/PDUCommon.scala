@@ -29,3 +29,31 @@ case class PDUParams(
       "streamChunkWidth可能不足以应对最坏情况"
     )
 }
+
+/** ParallelUnaryDecoder的模块参数
+  * @param peekWindowWidth
+  *   检测窗口的总位宽, e.g., 256.
+  * @param segmentWidth
+  *   每个处理段的位宽, e.g., 32.
+  */
+case class ParallelUnaryDecoderParams(
+    peekWindowWidth: Int = 256,
+    segmentWidth: Int = 32
+) {
+    require(
+      peekWindowWidth % segmentWidth == 0,
+      "peekWindowWidth必须是segmentWidth的整数倍"
+    )
+    val segmentCount = peekWindowWidth / segmentWidth
+}
+
+/** 单个处理段的输出结果
+  * @param p
+  *   ParallelUnaryDecoder的配置参数
+  */
+class SegmentDecodeBundle(p: ParallelUnaryDecoderParams) extends Bundle {
+    // 在本段内找到的连续'1'的数量
+    val local_q = UInt(log2Ceil(p.segmentWidth + 1).W)
+    // 整个段是否全为'1'
+    val is_all_ones = Bool()
+}
