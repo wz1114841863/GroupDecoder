@@ -23,7 +23,7 @@ class ParallelUnaryDecoderSpec
               */
             val testVectors = Seq(
               (
-                "Segment 0 is all ones, Segment 1 has some ones",
+                "MSB-half has 3 leading ones, LSB-half is all ones",
                 BigInt(
                   "E0000000FFFFFFFF",
                   16
@@ -31,7 +31,7 @@ class ParallelUnaryDecoderSpec
                 Seq((32, true), (3, false))
               ),
               (
-                "Segment 0 starts with zero, Segment 1 is almost all ones",
+                "Segment 1 starts with zero, Segment 0 is almost all ones",
                 BigInt(
                   "FFFFFFFE7FFFFFFF",
                   16

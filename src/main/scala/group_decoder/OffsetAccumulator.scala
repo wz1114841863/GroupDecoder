@@ -11,11 +11,11 @@ import chisel3.util._
   */
 class OffsetAccumulatorIO(p: PDUParams, pudp: ParallelUnaryDecoderParams)
     extends Bundle {
-    // --- 输入 ---
-    // 从ParallelUnaryDecoder接收的"侦察报告"向量 (用于优化计算Weight 0)
-    val segment_results = Input(
-      Vec(pudp.segmentCount, new SegmentDecodeBundle(pudp))
-    )
+    // 从ParallelUnaryDecoder接收的向量
+    // 弃用, ParallelUnaryDecoder模块目前充当流水线延迟的角色, 不使用其输出
+    // val segment_results = Input(
+    //   Vec(pudp.segmentCount, new SegmentDecodeBundle(pudp))
+    // )
     // 从PDU主控制器接收的原始数据窥视窗口
     val peek_window = Input(UInt(pudp.peekWindowWidth.W))
     // 从PDU主控制器接收的当前组的k值
@@ -46,8 +46,8 @@ class OffsetAccumulator(p: PDUParams, pudp: ParallelUnaryDecoderParams)
     extends Module {
     val io = IO(new OffsetAccumulatorIO(p, pudp))
 
-    // --- 内部连线声明 ---
     // current_bit_ptr(i) 代表第i个权重在peek_window内的起始比特位置
+    // 多出来的一个是为了方便计算总消耗比特数
     val current_bit_ptr = Wire(
       Vec(p.unrollFactor + 1, UInt(log2Ceil(pudp.peekWindowWidth + 1).W))
     )
@@ -59,11 +59,8 @@ class OffsetAccumulator(p: PDUParams, pudp: ParallelUnaryDecoderParams)
     )
     val error_wires = Wire(Vec(p.unrollFactor, Bool()))
 
-    // --- 核心计算逻辑 ---
-
     // 初始化:第一个权重总是从窥视窗口的第0个比特开始
     current_bit_ptr(0) := 0.U
-
     // 并行生成N个权重的计算逻辑
     for (i <- 0 until p.unrollFactor) {
         // -----------------------------------------------------------------

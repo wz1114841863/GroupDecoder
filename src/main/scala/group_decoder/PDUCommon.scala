@@ -3,6 +3,8 @@ package group_decoder
 import chisel3._
 import chisel3.util._
 
+// MSB-first
+
 /** 存放PDU及其所有子模块共享的参数化配置, 确保整个设计体系的参数一致性.
   *
   * @param groupSize
@@ -21,7 +23,8 @@ case class PDUParams(
     unrollFactor: Int = 8,
     streamChunkWidth: Int = 1024,
     tagWidth: Int = 16,
-    maxQuotient: Int = 64
+    maxQuotient: Int = 64,
+    peekWindowWidth: Int = 256
 ) {
     require(isPow2(unrollFactor), "unrollFactor必须是2的幂次以简化树形逻辑")
     require(
