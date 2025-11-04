@@ -1,4 +1,4 @@
-package group_decoder
+package group_decoder.common
 
 import chisel3._
 import chisel3.util._

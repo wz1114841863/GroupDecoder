@@ -1,10 +1,11 @@
-package group_decoder
+package group_decoder.pdu
 
 import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
 import scala.collection.mutable.ArrayBuffer
+import group_decoder.common._
 
 class OffsetAccumulatorSpec extends AnyFreeSpec with Matchers with ChiselSim {
 

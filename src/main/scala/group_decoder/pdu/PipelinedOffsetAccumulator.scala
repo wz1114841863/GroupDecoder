@@ -1,7 +1,8 @@
-package group_decoder
+package group_decoder.pdu
 
 import chisel3._
 import chisel3.util._
+import group_decoder.common._
 
 // 流水线模块的输入Bundle
 class PipelinedOABundle_in(p: PDUParams, pudp: ParallelUnaryDecoderParams)

@@ -1,7 +1,8 @@
-package group_decoder
+package group_decoder.pdu
 
 import chisel3._
 import chisel3.util._
+import group_decoder.common._
 
 /** OffsetAccumulator的IO接口
   * @param p
