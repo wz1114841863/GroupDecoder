@@ -27,39 +27,43 @@ class DecoderStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
         val final_qs = new ArrayBuffer[Int]()
         val final_rs = new ArrayBuffer[Int]()
         val lengths = new ArrayBuffer[Int]()
-        var error = false
+        var overall_error = false
 
         var current_bit_ptr = start_offset_in
 
         for (i <- 0 until sp.stageWidth) {
-            if (current_bit_ptr >= peekWindowStr.length) {
-                // 如果指针超出范围, 后续结果都为0
-                final_qs += 0
-                final_rs += 0
-                lengths += 0
+
+            // --- 模拟 MicroDecoder ---
+            // 1. 寻找第一个'0' (q)
+            val first_zero_idx = peekWindowStr.indexOf('0', current_bit_ptr)
+            var q = 0
+            var local_error = false
+
+            if (first_zero_idx == -1) { // 没找到'0'
+                q = p.peekWindowWidth - current_bit_ptr
             } else {
-                // --- 模拟 MicroDecoder 的 Slow Path ---
-                // 1. 寻找第一个'0' (q)
-                val first_zero_idx = peekWindowStr.indexOf('0', current_bit_ptr)
-                var q = 0
-                if (first_zero_idx == -1) { // 没找到'0' (异常)
-                    q = p.peekWindowWidth - current_bit_ptr
-                } else {
-                    q = first_zero_idx - current_bit_ptr
-                }
+                q = first_zero_idx - current_bit_ptr
+            }
 
-                if (q > p.qMax) {
-                    error = true
-                    q = p.qMax // 限制q值
-                }
-                final_qs += q
+            if (q > p.qMax) {
+                local_error = true
+                overall_error = true
+                q = 0
+            }
+            final_qs += q
 
-                // 2. 寻找余数r
+            // 2. 寻找余数r
+            var r = 0
+            var len = 0
+            if (local_error) {
+                len = 0
+                r = 0
+            } else {
                 val q_consumed = q + 1
                 val r_start_idx = current_bit_ptr + q_consumed
-                var r = 0
+
                 if (r_start_idx + k_val > peekWindowStr.length) {
-                    error = true // 数据不足
+                    overall_error = true // 数据不足
                 } else {
                     val r_str = peekWindowStr.substring(
                       r_start_idx,
@@ -67,18 +71,23 @@ class DecoderStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
                     )
                     r = BigInt(r_str, 2).toInt
                 }
-                final_rs += r
-
-                // 3. 计算长度
-                val len = q_consumed + k_val
-                lengths += len
-                current_bit_ptr += len
+                len = q_consumed + k_val
             }
+
+            final_rs += r
+            lengths += len
+            current_bit_ptr += len
         }
 
         val total_consumed = current_bit_ptr - start_offset_in
         val next_offset = current_bit_ptr
-        (final_qs.toSeq, final_rs.toSeq, total_consumed, next_offset, error)
+        (
+          final_qs.toSeq,
+          final_rs.toSeq,
+          total_consumed,
+          next_offset,
+          overall_error
+        )
     }
 
     "DecoderStage (v5.0) should correctly cascade decode 4 weights" in {
@@ -135,6 +144,18 @@ class DecoderStageSpec extends AnyFreeSpec with Matchers with ChiselSim {
                     "1" * 7 + "0" + "1" +
                     "1101" +
                     "00" + "0" * (p.peekWindowWidth - 32)
+              ),
+              (
+                "Test 4: Error Propagation (k=2, offset=0)",
+                1,
+                0, // k_in=1 -> k=2
+                // w0: q=1,r=3,len=4 (Fast: "1011")
+                // w1: q=16,len=0 (Error: "1"*16) <-- 错误在这里触发
+                // w2: 应该从 w1 的偏移量开始, 也会看到 "1"*16 并报错
+                // w3: 同上
+                "1011" +
+                    "1" * 16 + // 16个'1' (q > qMax)
+                    "0" * (p.peekWindowWidth - 20)
               )
             )
 

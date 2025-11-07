@@ -33,7 +33,7 @@ class DecoderStageIO(p: PDUParams, sp: DecoderStageParams) extends Bundle {
 
     /** 本阶段所有权重消耗的总比特数 */
     val total_consumed_bits_out = Output(
-      UInt(p.lengthWidth.W)
+      UInt(log2Ceil(p.peekWindowWidth).W)
     ) // FIXME: 位宽可能需要调整
 
     /** 为下一个流水线阶段准备的起始偏移量 */
