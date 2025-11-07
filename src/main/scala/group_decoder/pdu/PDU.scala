@@ -2,165 +2,147 @@ package group_decoder.pdu
 
 import chisel3._
 import chisel3.util._
+
 import group_decoder.common._
 
-// 定义输入的"任务包"结构
-class PDUTaskBundle(p: PDUParams) extends Bundle {
-    val tag = UInt(16.W) // 假设最多有2^16个组
-    val stream_chunk = UInt(p.streamChunkWidth.W)
-    val zp = UInt(4.W)
-    val k = UInt(2.W)
-}
-
-// 定义输出的"结果包"结构
-class PDUResultBundle(p: PDUParams) extends Bundle {
-    val tag = UInt(16.W)
-    val weights = Vec(p.unrollFactor, UInt(4.W))
-    val last = Bool()
-}
-
-// 最终的PDU模块IO定义
-class PDU_IO(p: PDUParams) extends Bundle {
-    val task_in = Flipped(Decoupled(new PDUTaskBundle(p)))
-    val result_out = Decoupled(new PDUResultBundle(p))
-    val error = Output(Bool())
-}
-
-// PDU模块的骨架
-// PDU模块的骨架
 class PDU(p: PDUParams) extends Module {
     val io = IO(new PDU_IO(p))
 
-    // --- 1. 实例化所有流水线子模块 ---
-    val unaryDecoder = Module(
-      new ParallelUnaryDecoder(ParallelUnaryDecoderParams(p.peekWindowWidth))
-    )
-    val offsetAccumulator = Module(
-      new PipelinedOffsetAccumulator(
-        p,
-        ParallelUnaryDecoderParams(p.peekWindowWidth)
-      )
-    )
-    val remainderExtractor = Module(
-      new PipelinedParallelRemainderExtractor(
-        p,
-        ParallelUnaryDecoderParams(p.peekWindowWidth)
-      )
-    )
-    val reconstructorArray = Module(new ParallelReconstructorArray(p))
+    // 我们将stageWidth硬编码为 unrollFactor/2
+    val sp = DecoderStageParams(stageWidth = p.unrollFactor / 2)
+    require(p.unrollFactor % 2 == 0, "unrollFactor必须为偶数")
 
-    unaryDecoder.io.peek_window := 0.U
+    // --- 1. 实例化子模块 ---
+    val stage_0 = Module(new DecoderStage(p, sp))
+    val stage_1 = Module(new DecoderStage(p, sp))
+    val reconstructor = Module(new ParallelReconstructorArray(p))
 
-    offsetAccumulator.io.in.valid := false.B
-    offsetAccumulator.io.in.bits.peek_window := 0.U
-    offsetAccumulator.io.in.bits.k := 0.U
-
-    remainderExtractor.io.in.valid := false.B
-    remainderExtractor.io.in.bits.final_q_vec.foreach(_ := 0.U)
-    remainderExtractor.io.in.bits.offset_vec.foreach(_ := 0.U)
-    remainderExtractor.io.in.bits.k := 0.U
-    remainderExtractor.io.in.bits.peek_window := 0.U
-
-    reconstructorArray.io.final_q_vec.foreach(_ := 0.U)
-    reconstructorArray.io.r_vec.foreach(_ := 0.U)
-    reconstructorArray.io.k := 0.U
-    reconstructorArray.io.zp := 0.U
-
-    // --- 2. 内部状态与核心数据通路寄存器 ---
-    object State extends ChiselEnum { val sIDLE, sDECODING = Value }
+    // --- 2. 核心状态与数据通路 ---
+    object State extends ChiselEnum { val sIDLE, sS1, sS2 = Value }
     val state = RegInit(State.sIDLE)
-    val input_stream_shifter = Reg(UInt(p.streamChunkWidth.W))
+
+    val shifter_reg = Reg(UInt(p.streamChunkWidth.W))
     val decoded_count = Reg(UInt(log2Ceil(p.groupSize + 1).W))
+    val k_reg = Reg(UInt(p.kInWidth.W))
+    val zp_reg = Reg(UInt(4.W))
+    val tag_reg = Reg(UInt(p.tagWidth.W))
 
-    // --- 3. 上下文信息流水线寄存器 ---
-    val task_reg_p1 = Reg(new PDUTaskBundle(p)) // OA 输入级
-    val task_reg_p2 = Reg(new PDUTaskBundle(p)) // PRE 输入级
-    // q_vec 也需要同步传递, 为 P4 提供正确的输入
-    val q_vec_p3 = Reg(Vec(p.unrollFactor, UInt(log2Ceil(p.maxQuotient + 1).W)))
-    val task_reg_p3 = Reg(new PDUTaskBundle(p)) // PRA & 输出级
+    // --- 3. 流水线寄存器 ---
+    // S1 (stage_0) -> S2 (stage_1)
+    val s1_offset_4 = Reg(UInt(log2Ceil(p.peekWindowWidth).W))
+    val s1_q_vec_0_3 = Reg(Vec(sp.stageWidth, UInt(p.qValWidth.W)))
+    val s1_r_vec_0_3 = Reg(Vec(sp.stageWidth, UInt(p.rValWidth.W)))
+    val s1_error = Reg(Bool())
 
-    // 添加一个寄存器来流水化 P1 (OA) 使用的 peek_window
-    val peek_window_p2_reg = Reg(UInt(p.peekWindowWidth.W))
-    // =========================================================
+    // S2 (stage_1) -> S3 (Reconstructor)
+    val s2_q_vec_4_7 = Reg(Vec(sp.stageWidth, UInt(p.qValWidth.W)))
+    val s2_r_vec_4_7 = Reg(Vec(sp.stageWidth, UInt(p.rValWidth.W)))
+    val s2_total_consumed = Reg(UInt(p.lengthWidth.W)) // FIXME: 位宽
+    val s2_error = Reg(Bool())
 
-    // --- 4. 主FSM与任务接收 ---
-    io.task_in.ready := state === State.sIDLE
-    when(io.task_in.fire) {
-        state := State.sDECODING
-        input_stream_shifter := io.task_in.bits.stream_chunk
-        task_reg_p1 := io.task_in.bits
-        decoded_count := 0.U
-    }
+    // S3 (Output) -> io.result_out
+    val s3_weights = Reg(Vec(p.unrollFactor, UInt(4.W)))
+    val s3_tag = Reg(UInt(p.tagWidth.W))
+    val s3_last = Reg(Bool())
+    val s3_error = Reg(Bool())
+    val s3_valid = RegInit(false.B)
 
-    val peek_window = input_stream_shifter(
+    // =================================================================
+    //  组合逻辑数据通路 (在FSM的when块中被锁存)
+    // =================================================================
+
+    // --- Stage 0 逻辑 ---
+    val peek_window = shifter_reg(
       p.streamChunkWidth - 1,
       p.streamChunkWidth - p.peekWindowWidth
     )
-    unaryDecoder.io.peek_window := peek_window
+    stage_0.io.peek_window := peek_window
+    stage_0.io.start_offset_in := 0.U
+    stage_0.io.k_in := k_reg
 
-    // P1 -> P2 (OA)
-    offsetAccumulator.io.in.valid := (state === State.sDECODING) && (decoded_count < p.groupSize.U)
-    offsetAccumulator.io.in.bits.peek_window := peek_window
-    offsetAccumulator.io.in.bits.k := task_reg_p1.k
+    // --- Stage 1 逻辑 ---
+    stage_1.io.peek_window := peek_window
+    stage_1.io.start_offset_in := s1_offset_4
+    stage_1.io.k_in := k_reg
 
-    // P2 -> P3 (PRE)
-    remainderExtractor.io.in.valid := offsetAccumulator.io.out.valid
-    offsetAccumulator.io.out.ready := remainderExtractor.io.in.ready
-    remainderExtractor.io.in.bits.final_q_vec := offsetAccumulator.io.out.bits.final_q_vec
-    remainderExtractor.io.in.bits.offset_vec := offsetAccumulator.io.out.bits.offset_vec
-    remainderExtractor.io.in.bits.k := task_reg_p2.k
+    // --- Stage 2 逻辑 ---
+    reconstructor.io.final_q_vec := s1_q_vec_0_3 ## s2_q_vec_4_7
+    reconstructor.io.r_vec := s1_r_vec_0_3 ## s2_r_vec_4_7
+    reconstructor.io.k_in := k_reg
+    reconstructor.io.zp := zp_reg
 
-    // 使用流水化传递过来的 peek_window_p2_reg
-    remainderExtractor.io.in.bits.peek_window := peek_window_p2_reg
+    // =================================================================
+    //  FSM (控制数据流)
+    // =================================================================
 
-    // P3 -> P4 (PRA)
-    reconstructorArray.io.final_q_vec := q_vec_p3
-    reconstructorArray.io.r_vec := remainderExtractor.io.out.bits.r_vec
-    reconstructorArray.io.k := task_reg_p3.k
-    reconstructorArray.io.zp := task_reg_p3.zp
+    // 默认连接
+    io.task_in.ready := false.B
+    io.result_out.valid := s3_valid
+    io.result_out.bits.weights := s3_weights
+    io.result_out.bits.tag := s3_tag
+    io.result_out.bits.last := s3_last
+    io.error := s3_error
 
-    // --- 上下文流水线传递 ---
-    when(offsetAccumulator.io.in.fire) {
-        task_reg_p2 := task_reg_p1
-        peek_window_p2_reg := peek_window
-    }
-    when(remainderExtractor.io.in.fire) {
-        task_reg_p3 := task_reg_p2
-        q_vec_p3 := remainderExtractor.io.in.bits.final_q_vec // 将q_vec也同步锁存
-    }
-
-    // --- 移位器反馈控制 ---
-    when(offsetAccumulator.io.out.fire) {
-        input_stream_shifter := input_stream_shifter << offsetAccumulator.io.out.bits.total_consumed_bits
+    when(s3_valid && io.result_out.ready) {
+        // 当输出被接收时, S3无效
+        s3_valid := false.B
     }
 
-    // --- 计数器与状态更新 ---
-    val is_last_dispatch =
-        (decoded_count + (p.unrollFactor * 2).U) >= p.groupSize.U
-    when(io.result_out.fire) {
-        decoded_count := decoded_count + p.unrollFactor.U
-        when(io.result_out.bits.last) {
-            state := State.sIDLE
+    switch(state) {
+        is(State.sIDLE) {
+            io.task_in.ready := true.B
+            when(io.task_in.fire) {
+                // 锁存任务, 进入S1
+                shifter_reg := io.task_in.bits.stream_chunk
+                k_reg := io.task_in.bits.k
+                zp_reg := io.task_in.bits.zp
+                tag_reg := io.task_in.bits.tag
+                decoded_count := 0.U
+                state := State.sS1
+            }
+        }
+
+        is(State.sS1) {
+            // S1 正在计算. (stage_0 组合逻辑正在执行)
+            // 在时钟沿, 锁存S1的结果, 进入S2
+            when(!s2_valid || s3_ready) { // S2 空闲
+                s1_offset_4 := stage_0.io.next_stage_offset_out
+                s1_q_vec_0_3 := stage_0.io.final_q_vec
+                s1_r_vec_0_3 := stage_0.io.final_r_vec
+                s1_error := stage_0.io.error
+                state := State.sS2
+            }
+        }
+
+        is(State.sS2) {
+            // S2 正在计算. (stage_1 组合逻辑正在执行)
+            // 在时钟沿, 锁存S2的结果, 准备输出
+            when(!s3_valid || io.result_out.ready) { // S3 空闲
+                s2_q_vec_4_7 := stage_1.io.final_q_vec
+                s2_r_vec_4_7 := stage_1.io.final_r_vec
+                s2_total_consumed := s1_offset_4 + stage_1.io.total_consumed_bits_out
+                s2_error := s1_error || stage_1.io.error
+
+                // 锁存最终输出
+                s3_weights := reconstructor.io.final_weights_vec
+                s3_tag := tag_reg
+                s3_error := s2_error
+                s3_valid := true.B // 数据已准备好
+
+                val is_last =
+                    (decoded_count + p.unrollFactor.U) >= p.groupSize.U
+                s3_last := is_last
+
+                // 更新下一批数据的上下文
+                shifter_reg := shifter_reg << s2_total_consumed
+                decoded_count := decoded_count + p.unrollFactor.U
+
+                when(is_last) {
+                    state := State.sIDLE
+                }.otherwise {
+                    state := State.sS1 // 返回S1, 处理下一批
+                }
+            }
         }
     }
-
-    // --- 6. 连接最终输出 ---
-    io.result_out.valid := remainderExtractor.io.out.valid
-    // **核心修正**: 将外部的ready信号连接到流水线末端
-    remainderExtractor.io.out.ready := io.result_out.ready
-
-    io.result_out.bits.weights := reconstructorArray.io.final_weights_vec
-    io.result_out.bits.tag := task_reg_p3.tag
-
-    // last信号的同步传递
-    val last_signal_p2 =
-        RegEnable(is_last_dispatch, offsetAccumulator.io.in.fire)
-    val last_signal_p3 =
-        RegEnable(last_signal_p2, remainderExtractor.io.in.fire)
-    io.result_out.bits.last := last_signal_p3
-
-    io.error := RegNext(
-      offsetAccumulator.io.out.fire && offsetAccumulator.io.out.bits.error,
-      init = false.B
-    )
 }
