@@ -162,3 +162,50 @@ object GRDecoderCoreParams {
 
     val default: GRDecoderCoreParams = apply()
 }
+
+/** DecoderBank (顶层分发模块) 的参数
+  *
+  * @param coreParams
+  *   嵌套的 GRDecoderCoreParams
+  * @param P
+  *   并行解码器 的数量
+  * @param metaSramDepth
+  *   "元数据 SRAM" 的深度
+  * @param sharedCacheKBytes
+  *   "共享缓存" 的大小 (2KB)
+  * @param metaDataType
+  *   合并的元数据
+  */
+
+class MetaData(val p: GRDecoderCoreParams) extends Bundle {
+    val start_byte_addr = UInt(p.streamAddrWidth.W)
+    val zero_point = UInt(p.zpWidth.W)
+}
+
+case class DecoderBankParams(
+    coreParams: GRDecoderCoreParams,
+    P: Int,
+    metaSramDepth: Int,
+    sharedCacheKBytes: Int,
+    metaDataType: MetaData
+)
+
+object DecoderBankParams {
+    def apply(
+        coreParams: GRDecoderCoreParams = GRDecoderCoreParams.default,
+        P: Int = 8,
+        metaSramDepth: Int = 250000,
+        sharedCacheKBytes: Int = 2
+    ): DecoderBankParams = {
+        DecoderBankParams(
+          coreParams,
+          P,
+          metaSramDepth,
+          sharedCacheKBytes,
+          new MetaData(coreParams) // 实例化 Bundle
+        )
+    }
+
+    // 提供默认配置
+    val default: DecoderBankParams = apply()
+}

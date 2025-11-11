@@ -165,7 +165,7 @@ class GRDecoderCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
         implicit val p = GRDecoderCoreParams.default
         val goldenWeights = genGoldenWeights(p, 0) // 测试 组 0
 
-        simulate(new GRDecoderCore(p)) { dut =>
+        simulate(new GRDecoderCore(p, 0.U)) { dut =>
             dut.reset.poke(true.B)
             dut.clock.step()
             dut.reset.poke(false.B)
@@ -261,7 +261,7 @@ class GRDecoderCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
         implicit val p = GRDecoderCoreParams.default
         val goldenWeights = genGoldenWeights(p, 1) // 测试 组 1
 
-        simulate(new GRDecoderCore(p)) { dut =>
+        simulate(new GRDecoderCore(p, 0.U)) { dut =>
             dut.reset.poke(true.B)
             dut.clock.step()
             dut.reset.poke(false.B)
@@ -353,7 +353,7 @@ class GRDecoderCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
 
         implicit val p = GRDecoderCoreParams.default
 
-        simulate(new GRDecoderCore(p)) { dut =>
+        simulate(new GRDecoderCore(p, 0.U)) { dut =>
             dut.reset.poke(true.B)
             dut.clock.step()
             dut.reset.poke(false.B)

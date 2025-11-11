@@ -43,8 +43,13 @@ class GRDecoderCoreIO(val p: GRDecoderCoreParams) extends Bundle {
 
 /** GR 解码器核心模块
   */
-class GRDecoderCore(val p: GRDecoderCoreParams) extends Module {
+class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
+    extends Module {
     val io = IO(new GRDecoderCoreIO(p))
+
+    // 调试计数器
+    val cycle_count_reg = RegInit(0.U(32.W))
+    cycle_count_reg := cycle_count_reg + 1.U
 
     // 实例化子模块
     val gr_decoder = Module(new DecodeUnit_GR(p.grDecoderConfig))
@@ -82,6 +87,10 @@ class GRDecoderCore(val p: GRDecoderCoreParams) extends Module {
     val r_pipe_reg = RegInit(0.U(p.grDecoderConfig.grRValWidth.W))
     val consumed_bits_reg = RegInit(0.U(p.grDecoderConfig.grLengthWidth.W))
     val is_fallback_pipe_reg = RegInit(false.B)
+
+    // 添加 k_in 和 zp 的流水线寄存器
+    val k_in_pipe_reg = RegInit(0.U(p.grDecoderConfig.grKInWidth.W))
+    val zero_point_pipe_reg = RegInit(0.U(p.zpWidth.W))
 
     // --- 默认输出 ---
     io.finished := false.B
@@ -132,16 +141,24 @@ class GRDecoderCore(val p: GRDecoderCoreParams) extends Module {
             io.meta_req.addr := io.group_index
 
             when(io.meta_resp.valid) {
-                io.meta_req.valid := false.B
+                // io.meta_req.valid := false.B
 
                 // 锁存元数据
                 next_fetch_addr_reg := io.meta_resp.start_byte_addr
                 zero_point_reg := io.meta_resp.zero_point
 
+                // printf(
+                //   p"[DUT Core ${coreId}] Fetched Meta: StartAddr=0x${Hexadecimal(
+                //         io.meta_resp.start_byte_addr
+                //       )}, ZP=${io.meta_resp.zero_point}\n"
+                // )
+
                 // 复位计数器
                 decoded_count := 0.U
                 sram_write_addr := 0.U
                 bits_valid_in_buffer := 0.U // 强制进入 sFetchStream
+
+                raw_buffer_reg := 0.U
 
                 state := State.sFetchStream
             }
@@ -154,31 +171,23 @@ class GRDecoderCore(val p: GRDecoderCoreParams) extends Module {
 
             when(io.stream_resp.valid) {
                 // 收到响应,停止请求
-                io.stream_req.valid := false.B
-
-                // ================== [ 修复 2: 核心缓冲区 BUG ] ==================
+                // io.stream_req.valid := false.B
 
                 // 1. 将 64-bit 的新数据强制转换为 128-bit UInt
-                //    使用 .pad() 来确保 Chisel 知道我们想要 128 位
                 val new_data_128bit =
                     io.stream_resp.data.pad(p.internalBufferWidth)
 
                 // 2. 将这个 128-bit 值左移,使其 *左对齐*
-                //    (即,[NewData(64) | 0(64)])
                 val new_data_padded_to_msb =
                     new_data_128bit << (p.internalBufferWidth - p.streamFetchWidth).U
 
-                // 3. 将这个对齐的值右移,使其紧跟在已有的 "bits_valid_in_buffer" 之后
-                //    raw_buffer_reg 已经是 [V(18) | 0(110)]
-                //    new_data_shifted 变成 [0(18) | N(64) | 0(46)]
+                // 3. 将这个对齐的值右移,
+                // 使其紧跟在已有的 "bits_valid_in_buffer" 之后
+
                 val new_data_shifted =
                     new_data_padded_to_msb >> bits_valid_in_buffer
 
-                // 4. 将其与已有的 'raw_buffer_reg' 合并
-                //    结果: [V(18) | N(64) | 0(46)]
                 raw_buffer_reg := raw_buffer_reg | new_data_shifted
-
-                // ================== [ 修复结束 ] ==================
 
                 // 更新有效比特计数器
                 bits_valid_in_buffer := bits_valid_in_buffer + p.streamFetchWidth.U
@@ -247,10 +256,20 @@ class GRDecoderCore(val p: GRDecoderCoreParams) extends Module {
                 //       p"GR_OUT -> q: ${gr_q}, r: ${gr_r}, consumed: ${gr_consumed_bits}. " +
                 //       p"Fallback: ${is_fallback_reg}\n"
                 // )
+
+                // printf(
+                //   p"[DUT Core ${coreId}] [C=${cycle_count_reg}] sDecode_Exec: LATCHING -> " +
+                //       p"k_in_reg: ${k_in_reg}, zp_reg: ${zero_point_reg}, q: ${gr_q}, r: ${gr_r}\n"
+                // )
+
                 // 执行解码
                 state := State.sDecode_Post
                 // 锁存流水线 寄存器
                 is_fallback_pipe_reg := is_fallback_reg
+
+                k_in_pipe_reg := k_in_reg
+                zero_point_pipe_reg := zero_point_reg
+
                 when(is_fallback_reg) {
                     // 锁存 Fallback 路径
                     weight_pipe_reg := fb_final_weight
@@ -273,7 +292,7 @@ class GRDecoderCore(val p: GRDecoderCoreParams) extends Module {
                 io.sram_write.data := weight_pipe_reg
             }.otherwise {
                 //  拼接
-                val k_val = k_in_reg + 1.U
+                val k_val = k_in_pipe_reg + 1.U(2.W)
                 val mapped_delta = (q_pipe_reg << k_val) | r_pipe_reg
 
                 //  反映射
@@ -285,7 +304,13 @@ class GRDecoderCore(val p: GRDecoderCoreParams) extends Module {
                 )
                 //  加零点
                 val final_weight_calc =
-                    (signed_delta + zero_point_reg.zext.asSInt).asUInt
+                    (signed_delta + zero_point_pipe_reg.zext.asSInt).asUInt
+
+                // printf(
+                //   p"[DUT Core ${coreId}] [C=${cycle_count_reg}] sDecode_Post: CALCULATING -> " +
+                //       p"k_pipe: ${k_in_pipe_reg}, zp_pipe: ${zero_point_pipe_reg}, q_pipe: ${q_pipe_reg}, r_pipe: ${r_pipe_reg}\n" +
+                //       p"  -> k_val=${k_val}, mapped_delta=${mapped_delta}, signed_delta=${signed_delta}, FINAL_WEIGHT=${final_weight_calc}\n"
+                // )
 
                 // 直接赋值
                 io.sram_write.data := final_weight_calc
@@ -323,21 +348,17 @@ class GRDecoderCore(val p: GRDecoderCoreParams) extends Module {
         }
     }
 
-    // 添加一个周期计数器
-    val cycle_count_reg = RegInit(0.U(32.W))
-    cycle_count_reg := cycle_count_reg + 1.U
+    // --- 调试输出 ---
+    // val coreId = p.P match {
+    //     case 2 => Mux(this.hashCode.U % 2.U === 0.U, 0.U, 1.U)
+    //     case _ => 0.U // 默认为 0
+    // }
 
-    // 在每个周期打印 FSM 状态 和 关键 IO
     // printf(
-    //   p"[DUT C=${cycle_count_reg}] State: ${state} | " +
-    //       p"Decoded: ${decoded_count} (of ${p.groupSize.U}) | " +
-    //       p"BufValidBits: ${bits_valid_in_buffer} | " +
-    //       // --- 关键 IO 握手 ---
-    //       p"meta_REQ: ${io.meta_req.valid} | " +
-    //       p"meta_RESP: ${io.meta_resp.valid} | " +
-    //       p"stream_REQ: ${io.stream_req.valid} | " +
-    //       p"stream_RESP: ${io.stream_resp.valid} | " +
-    //       p"sram_WRITE: ${io.sram_write.valid} | " +
-    //       p"FINISHED: ${io.finished}\n"
+    //   p"[DUT Core ${coreId}] [C=${cycle_count_reg}] State: ${state} | " +
+    //       p"Start: ${io.start} | Fin: ${io.finished} | " +
+    //       p"Meta(V/R): ${io.meta_req.valid}/${io.meta_resp.valid} | " +
+    //       p"Stream(V/R): ${io.stream_req.valid}/${io.stream_resp.valid}\n"
     // )
+
 }
