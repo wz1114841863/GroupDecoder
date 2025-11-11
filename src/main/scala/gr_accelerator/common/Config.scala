@@ -42,11 +42,10 @@ case class GRDecoderConfig(
 )
 
 object GRDecoderConfig {
-
     def create(
         grChunkWidth: Int = 20,
         grKInWidth: Int = 1,
-        grFastPathMaxBits: Int = 4,
+        grFastPathMaxBits: Int = 6,
         grQMax: Int = 15
     ): GRDecoderConfig = {
         val grKValWidth = 2
@@ -131,7 +130,7 @@ object GRDecoderCoreParams {
         weightWidth: Int = 4,
         zpWidth: Int = 8,
         streamFetchWidth: Int = 64,
-        internalBufferWidth: Int = 128,
+        internalBufferWidth: Int = 96, // 64 + 20 < 96
         metaGroupIndexWidth: Int = 16, // 可支持 65536 组
         streamAddrWidth: Int = 32, // 32-bit 字节地址
         groupBitOffsetWidth: Int = 24 // 组 内最大比特偏移

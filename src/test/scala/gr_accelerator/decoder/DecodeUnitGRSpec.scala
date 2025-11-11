@@ -8,13 +8,13 @@ import gr_accelerator.common.GRDecoderConfig
 
 /** DecodeUnit_GR_Spec测试模块
   */
-class DecodeUnit_GR_Spec extends AnyFreeSpec with Matchers with ChiselSim {
-    "DecodeUnit_GR (V10.5 Logic) should correctly decode GR streams" in {
+class DecodeUnitGRSpec extends AnyFreeSpec with Matchers with ChiselSim {
+    "DecodeUnit_GR should correctly decode GR streams" in {
         // 1. 实例化我们的共享配置
         implicit val p = GRDecoderConfig.default
 
         // 2. 启动模拟
-        simulate(new DecodeUnit_GR(p)) { dut =>
+        simulate(new DecodeUnitGR(p)) { dut =>
             // 3. 标准复位序列
             dut.reset.poke(true.B)
             dut.clock.step()
@@ -70,7 +70,7 @@ class DecodeUnit_GR_Spec extends AnyFreeSpec with Matchers with ChiselSim {
             )
 
             runTest(
-              "3: Slow k=1",
+              "3: Fast k=1",
               k_in = 0,
               bits = "1111100", // q=5, r=0
               exp_q = 5,
@@ -79,7 +79,7 @@ class DecodeUnit_GR_Spec extends AnyFreeSpec with Matchers with ChiselSim {
             )
 
             runTest(
-              "4: Slow k=2",
+              "4: Fast k=2",
               k_in = 1,
               bits = "111001", // q=3, r=1
               exp_q = 3,
@@ -87,7 +87,7 @@ class DecodeUnit_GR_Spec extends AnyFreeSpec with Matchers with ChiselSim {
               exp_len = 6 // (q=3 + 1 + k=2) = 6
             )
 
-            // Test 5: 快车道未命中 (k=1, q=3 编码 "1110"), 必须由慢车道 处理
+            // Test 5: 快车道 (k=1, q=3 编码 "1110")
             runTest(
               "5: Fast Path Miss",
               k_in = 0,
@@ -134,6 +134,45 @@ class DecodeUnit_GR_Spec extends AnyFreeSpec with Matchers with ChiselSim {
               exp_err = true
             )
 
+            // Test 9: 快路径 k=1, q=0
+            runTest(
+              "9: Fast k=1, q=0 (r=1)",
+              k_in = 0,
+              bits = "01", // q=0, r=1
+              exp_q = 0,
+              exp_r = 1,
+              exp_len = 2 // (q=0 + 1 + k=1) = 2
+            )
+
+            // Test 10: 快路径 k=2, q=0
+            runTest(
+              "10: Fast k=2, q=0 (r=2)",
+              k_in = 1,
+              bits = "010", // q=0, r=2
+              exp_q = 0,
+              exp_r = 2,
+              exp_len = 3 // (q=0 + 1 + k=2) = 3
+            )
+
+            // Test 11: 验证 6-bit 快路径 (k=1)
+            runTest(
+              "11: Fast k=1, q=4 (6-bit)",
+              k_in = 0,
+              bits = "111101", // q=4, r=1
+              exp_q = 4,
+              exp_r = 1,
+              exp_len = 6 // (q=4 + 1 + k=1) = 6
+            )
+
+            // Test 12: 验证 6-bit 快路径 (k=2)
+            runTest(
+              "12: Fast k=2, q=3 (6-bit)",
+              k_in = 1,
+              bits = "111011", // q=3, r=3
+              exp_q = 3,
+              exp_r = 3,
+              exp_len = 6 // (q=3 + 1 + k=2) = 6
+            )
             println("--- DecodeUnit_GR所有测试用例通过 ---")
         }
     }

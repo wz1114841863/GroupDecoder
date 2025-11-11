@@ -52,7 +52,7 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
     cycle_count_reg := cycle_count_reg + 1.U
 
     // 实例化子模块
-    val gr_decoder = Module(new DecodeUnit_GR(p.grDecoderConfig))
+    val gr_decoder = Module(new DecodeUnitGR(p.grDecoderConfig))
 
     // FSM 状态定义
     object State extends ChiselEnum {
@@ -103,17 +103,17 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
     io.sram_write.data := 0.U
 
     // 从128-bit缓冲的顶端提取 20-bit 块
-    val aligned_chunk_20bit = raw_buffer_reg(
+    val aligned_chunk_top = raw_buffer_reg(
       p.internalBufferWidth - 1,
       p.internalBufferWidth - p.grDecoderConfig.grChunkWidth
     )
 
     // 连接解码器
-    gr_decoder.io.aligned_chunk := aligned_chunk_20bit
+    gr_decoder.io.aligned_chunk := aligned_chunk_top
     gr_decoder.io.k_in := k_in_reg
 
     // Fallback 路径逻辑
-    val fb_final_weight = aligned_chunk_20bit(
+    val fb_final_weight = aligned_chunk_top(
       p.grDecoderConfig.grChunkWidth - 1,
       p.grDecoderConfig.grChunkWidth - p.weightWidth
     )
@@ -141,6 +141,14 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
             io.meta_req.addr := io.group_index
 
             when(io.meta_resp.valid) {
+                // *** [DEBUG PRINTF] ***
+                printf(
+                  p"[Core ${coreId}] sFetchMeta: LATCHING Meta! " +
+                      p"group_index=${io.group_index}, " +
+                      p"recv_addr=0x${Hexadecimal(io.meta_resp.start_byte_addr)}, " +
+                      p"recv_zp=${io.meta_resp.zero_point}\n"
+                )
+
                 // io.meta_req.valid := false.B
 
                 // 锁存元数据
@@ -170,6 +178,12 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
             io.stream_req.addr := next_fetch_addr_reg
 
             when(io.stream_resp.valid) {
+                // *** [DEBUG PRINTF] ***
+                printf(
+                  p"[Core ${coreId}] sFetchStream: LATCHING Stream! " +
+                      p"req_addr=0x${Hexadecimal(next_fetch_addr_reg)}, " +
+                      p"recv_data=0x${Hexadecimal(io.stream_resp.data(63, 32))}...\n"
+                )
                 // 收到响应,停止请求
                 // io.stream_req.valid := false.B
 
@@ -252,7 +266,7 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
                 state := State.sDone // 错误,停止
             }.otherwise {
                 // printf(
-                //   p"  [sDecode_Exec] CHUNK_IN: 0x${Hexadecimal(aligned_chunk_20bit)} (k_in: ${k_in_reg}). " +
+                //   p"  [sDecode_Exec] CHUNK_IN: 0x${Hexadecimal( aligned_chunk_top)} (k_in: ${k_in_reg}). " +
                 //       p"GR_OUT -> q: ${gr_q}, r: ${gr_r}, consumed: ${gr_consumed_bits}. " +
                 //       p"Fallback: ${is_fallback_reg}\n"
                 // )

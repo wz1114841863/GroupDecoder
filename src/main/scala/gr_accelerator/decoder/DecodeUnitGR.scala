@@ -27,7 +27,7 @@ class DecodeUnitGR_IO(val p: GRDecoderConfig) extends Bundle {
 
 /** GR 解码器组合逻辑核心, 实现GR解码的快慢路径逻辑.
   */
-class DecodeUnit_GR(val p: GRDecoderConfig) extends Module {
+class DecodeUnitGR(val p: GRDecoderConfig) extends Module {
     val io = IO(new DecodeUnitGR_IO(p))
 
     // 模块的"k"值 (1.U 或 2.U)
@@ -40,58 +40,96 @@ class DecodeUnit_GR(val p: GRDecoderConfig) extends Module {
     val fast_path_len = WireDefault(0.U(p.grLengthWidth.W))
 
     // 前提: FSM 保证了数据已对齐
-    val stream_top4 =
+    val stream_top_bits =
         io.aligned_chunk(
           p.grChunkWidth - 1,
           p.grChunkWidth - p.grFastPathMaxBits
         )
 
     when(io.k_in === 0.U) { // k=1
-        when(stream_top4(3, 2) === "b00".U) { // "00xx" -> q=0, r=0
+        when(stream_top_bits(5, 4) === "b00".U) { // "00xxxx" -> q=0, r=0 (len=2)
             fast_path_valid := true.B; fast_path_q := 0.U; fast_path_r := 0.U;
-            fast_path_len := (0 + 1 + 1).U // (q+1+k)
-        }.elsewhen(stream_top4(3, 2) === "b01".U) { // "01xx" -> q=0, r=1
+            fast_path_len := (0 + 1 + 1).U
+        }.elsewhen(stream_top_bits(5, 4) === "b01".U) { // "01xxxx" -> q=0, r=1 (len=2)
             fast_path_valid := true.B; fast_path_q := 0.U; fast_path_r := 1.U;
             fast_path_len := (0 + 1 + 1).U
-        }.elsewhen(stream_top4(3, 1) === "b100".U) { // "100x" -> q=1, r=0
+        }.elsewhen(stream_top_bits(5, 3) === "b100".U) { // "100xxx" -> q=1, r=0 (len=3)
             fast_path_valid := true.B; fast_path_q := 1.U; fast_path_r := 0.U;
             fast_path_len := (1 + 1 + 1).U
-        }.elsewhen(stream_top4(3, 1) === "b101".U) { // "101x" -> q=1, r=1
+        }.elsewhen(stream_top_bits(5, 3) === "b101".U) { // "101xxx" -> q=1, r=1 (len=3)
             fast_path_valid := true.B; fast_path_q := 1.U; fast_path_r := 1.U;
             fast_path_len := (1 + 1 + 1).U
-        }.elsewhen(stream_top4 === "b1100".U) { // q=2, r=0
+        }.elsewhen(stream_top_bits(5, 2) === "b1100".U) { // "1100xx" -> q=2, r=0 (len=4)
             fast_path_valid := true.B; fast_path_q := 2.U; fast_path_r := 0.U;
             fast_path_len := (2 + 1 + 1).U
-        }.elsewhen(stream_top4 === "b1101".U) { // q=2, r=1
+        }.elsewhen(stream_top_bits(5, 2) === "b1101".U) { // "1101xx" -> q=2, r=1 (len=4)
             fast_path_valid := true.B; fast_path_q := 2.U; fast_path_r := 1.U;
             fast_path_len := (2 + 1 + 1).U
+        }.elsewhen(stream_top_bits(5, 1) === "b11100".U) { // "11100x" -> q=3, r=0 (len=5)
+            fast_path_valid := true.B; fast_path_q := 3.U; fast_path_r := 0.U;
+            fast_path_len := (3 + 1 + 1).U
+        }.elsewhen(stream_top_bits(5, 1) === "b11101".U) { // "11101x" -> q=3, r=1 (len=5)
+            fast_path_valid := true.B; fast_path_q := 3.U; fast_path_r := 1.U;
+            fast_path_len := (3 + 1 + 1).U
+        }.elsewhen(stream_top_bits === "b111100".U) { // "111100" -> q=4, r=0 (len=6)
+            fast_path_valid := true.B; fast_path_q := 4.U; fast_path_r := 0.U;
+            fast_path_len := (4 + 1 + 1).U
+        }.elsewhen(stream_top_bits === "b111101".U) { // "111101" -> q=4, r=1 (len=6)
+            fast_path_valid := true.B; fast_path_q := 4.U; fast_path_r := 1.U;
+            fast_path_len := (4 + 1 + 1).U
         }
+        // (q=5, len=7 将未命中,由慢路径 处理)
     }.otherwise { // k=2
-        when(stream_top4(3, 1) === "b000".U) { // "000x" -> q=0, r=0
+        when(stream_top_bits(5, 3) === "b000".U) { // "000xxx" -> q=0, r=0 (len=3)
             fast_path_valid := true.B; fast_path_q := 0.U; fast_path_r := 0.U;
             fast_path_len := (0 + 1 + 2).U
-        }.elsewhen(stream_top4(3, 1) === "b001".U) { // "001x" -> q=0, r=1
+        }.elsewhen(stream_top_bits(5, 3) === "b001".U) { // "001xxx" -> q=0, r=1 (len=3)
             fast_path_valid := true.B; fast_path_q := 0.U; fast_path_r := 1.U;
             fast_path_len := (0 + 1 + 2).U
-        }.elsewhen(stream_top4(3, 1) === "b010".U) { // "010x" -> q=0, r=2
+        }.elsewhen(stream_top_bits(5, 3) === "b010".U) { // "010xxx" -> q=0, r=2 (len=3)
             fast_path_valid := true.B; fast_path_q := 0.U; fast_path_r := 2.U;
             fast_path_len := (0 + 1 + 2).U
-        }.elsewhen(stream_top4(3, 1) === "b011".U) { // "011x" -> q=0, r=3
+        }.elsewhen(stream_top_bits(5, 3) === "b011".U) { // "011xxx" -> q=0, r=3 (len=3)
             fast_path_valid := true.B; fast_path_q := 0.U; fast_path_r := 3.U;
             fast_path_len := (0 + 1 + 2).U
-        }.elsewhen(stream_top4 === "b1000".U) { // q=1, r=0
+        }.elsewhen(stream_top_bits(5, 2) === "b1000".U) { // "1000xx" -> q=1, r=0 (len=4)
             fast_path_valid := true.B; fast_path_q := 1.U; fast_path_r := 0.U;
             fast_path_len := (1 + 1 + 2).U
-        }.elsewhen(stream_top4 === "b1001".U) { // q=1, r=1
+        }.elsewhen(stream_top_bits(5, 2) === "b1001".U) { // "1001xx" -> q=1, r=1 (len=4)
             fast_path_valid := true.B; fast_path_q := 1.U; fast_path_r := 1.U;
             fast_path_len := (1 + 1 + 2).U
-        }.elsewhen(stream_top4 === "b1010".U) { // q=1, r=2
+        }.elsewhen(stream_top_bits(5, 2) === "b1010".U) { // "1010xx" -> q=1, r=2 (len=4)
             fast_path_valid := true.B; fast_path_q := 1.U; fast_path_r := 2.U;
             fast_path_len := (1 + 1 + 2).U
-        }.elsewhen(stream_top4 === "b1011".U) { // q=1, r=3
+        }.elsewhen(stream_top_bits(5, 2) === "b1011".U) { // "1011xx" -> q=1, r=3 (len=4)
             fast_path_valid := true.B; fast_path_q := 1.U; fast_path_r := 3.U;
             fast_path_len := (1 + 1 + 2).U
+        }.elsewhen(stream_top_bits(5, 1) === "b11000".U) { // "11000x" -> q=2, r=0 (len=5)
+            fast_path_valid := true.B; fast_path_q := 2.U; fast_path_r := 0.U;
+            fast_path_len := (2 + 1 + 2).U
+        }.elsewhen(stream_top_bits(5, 1) === "b11001".U) { // "11001x" -> q=2, r=1 (len=5)
+            fast_path_valid := true.B; fast_path_q := 2.U; fast_path_r := 1.U;
+            fast_path_len := (2 + 1 + 2).U
+        }.elsewhen(stream_top_bits(5, 1) === "b11010".U) { // "11010x" -> q=2, r=2 (len=5)
+            fast_path_valid := true.B; fast_path_q := 2.U; fast_path_r := 2.U;
+            fast_path_len := (2 + 1 + 2).U
+        }.elsewhen(stream_top_bits(5, 1) === "b11011".U) { // "11011x" -> q=2, r=3 (len=5)
+            fast_path_valid := true.B; fast_path_q := 2.U; fast_path_r := 3.U;
+            fast_path_len := (2 + 1 + 2).U
+        }.elsewhen(stream_top_bits === "b111000".U) { // "111000" -> q=3, r=0 (len=6)
+            fast_path_valid := true.B; fast_path_q := 3.U; fast_path_r := 0.U;
+            fast_path_len := (3 + 1 + 2).U
+        }.elsewhen(stream_top_bits === "b111001".U) { // "111001" -> q=3, r=1 (len=6)
+            fast_path_valid := true.B; fast_path_q := 3.U; fast_path_r := 1.U;
+            fast_path_len := (3 + 1 + 2).U
+        }.elsewhen(stream_top_bits === "b111010".U) { // "111010" -> q=3, r=2 (len=6)
+            fast_path_valid := true.B; fast_path_q := 3.U; fast_path_r := 2.U;
+            fast_path_len := (3 + 1 + 2).U
+        }.elsewhen(stream_top_bits === "b111011".U) { // "111011" -> q=3, r=3 (len=6)
+            fast_path_valid := true.B; fast_path_q := 3.U; fast_path_r := 3.U;
+            fast_path_len := (3 + 1 + 2).U
         }
+        // (q=4, len=7 将未命中,由慢路径 处理)
     }
 
     // --- 2. 慢路径 (Slow Path) ---
@@ -120,7 +158,6 @@ class DecodeUnit_GR(val p: GRDecoderConfig) extends Module {
         val q = PriorityEncoder(inverted_vec.reverse)
 
         // *** [DEBUG PRINTF] ***
-        // 我们在这里添加打印语句
         // p"...": 这是一个 Chisel printf, 它可以打印硬件信号
         // printf(p"--- [MicroDecoder DEBUG] ---\n")
         // printf(p"  Slow Path Activated (k_in = ${io.k_in})\n")
