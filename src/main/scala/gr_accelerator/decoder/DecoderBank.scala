@@ -110,15 +110,6 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
     val meta_read_data = meta_sram(meta_req_addr)
     meta_arb.io.out.ready := true.B
 
-    // 广播
-    for (i <- p_grp) {
-        decoders(
-          i
-        ).meta_resp.valid := meta_req_valid && (meta_req_chosen === i.U)
-        decoders(i).meta_resp.start_byte_addr := meta_read_data.start_byte_addr
-        decoders(i).meta_resp.zero_point := meta_read_data.zero_point
-    }
-
     // --- SharedCache 响应 (组合逻辑) ---
     val stream_req_valid = stream_arb.io.out.valid
     val stream_req_addr = stream_arb.io.out.bits.addr
@@ -131,17 +122,58 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
     )
     stream_arb.io.out.ready := true.B
 
-    // 广播
-    for (i <- p_grp) {
-        decoders(
-          i
-        ).stream_resp.valid := stream_req_valid && (stream_req_chosen === i.U)
-        decoders(i).stream_resp.data := stream_read_data
-    }
     // 暴露 P=8 个写入 端口
     io.sram_write_outputs := decoders.map(_.sram_write)
 
-    // --- 5. FSM(状态机) (采纳您的 "Group_ID % P" 方案) ---
+    // --- 响应分发 (不再广播数据) ---
+    for (i <- p_grp) {
+        val core_won_meta = (meta_req_chosen === i.U)
+        val core_won_stream = (stream_req_chosen === i.U)
+
+        // Meta 响应
+        decoders(i).meta_resp.valid := meta_req_valid && core_won_meta
+        // 只有在获胜时才连接数据, 否则连接 0
+        decoders(i).meta_resp.start_byte_addr := Mux(
+          core_won_meta,
+          meta_read_data.start_byte_addr,
+          0.U
+        )
+        decoders(i).meta_resp.zero_point := Mux(
+          core_won_meta,
+          meta_read_data.zero_point,
+          0.U
+        )
+
+        // Stream 响应
+        decoders(i).stream_resp.valid := stream_req_valid && core_won_stream
+        // 只有在获胜时才连接数据, 否则连接 0
+        decoders(i).stream_resp.data := Mux(
+          core_won_stream,
+          stream_read_data,
+          0.U
+        )
+
+        // *** [DEBUG PRINTF] ***
+        // 当这个 Core (i) 赢得了 stream 仲裁时, 打印它请求的地址和它收到的数据
+        // when(stream_req_valid && core_won_stream) {
+        //     printf(
+        //       p"[Bank] Stream RESP: Core ${i} WON. " +
+        //           p"req_addr=0x${Hexadecimal(stream_req_addr)}, " +
+        //           p"sent_data=0x${Hexadecimal(stream_read_data(63, 32))}...\n"
+        //     )
+        // }
+
+        // 当这个 Core (i) 赢得了 meta 仲裁时, 打印
+        // when(meta_req_valid && core_won_meta) {
+        //     printf(
+        //       p"[Bank] Meta RESP: Core ${i} WON. " +
+        //           p"req_addr=${meta_req_addr}, " +
+        //           p"sent_addr=0x${Hexadecimal(meta_read_data.start_byte_addr)}\n"
+        //     )
+        // }
+    }
+
+    // --- 5. FSM(状态机, "Group_ID % P" 方案) ---
     object State extends ChiselEnum {
         val sIdle, sRun, sDone = Value
     }

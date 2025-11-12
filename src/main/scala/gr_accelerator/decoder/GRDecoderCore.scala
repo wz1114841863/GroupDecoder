@@ -142,12 +142,12 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
 
             when(io.meta_resp.valid) {
                 // *** [DEBUG PRINTF] ***
-                printf(
-                  p"[Core ${coreId}] sFetchMeta: LATCHING Meta! " +
-                      p"group_index=${io.group_index}, " +
-                      p"recv_addr=0x${Hexadecimal(io.meta_resp.start_byte_addr)}, " +
-                      p"recv_zp=${io.meta_resp.zero_point}\n"
-                )
+                // printf(
+                //   p"[Core ${coreId}] sFetchMeta: LATCHING Meta! " +
+                //       p"group_index=${io.group_index}, " +
+                //       p"recv_addr=0x${Hexadecimal(io.meta_resp.start_byte_addr)}, " +
+                //       p"recv_zp=${io.meta_resp.zero_point}\n"
+                // )
 
                 // io.meta_req.valid := false.B
 
@@ -179,11 +179,11 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
 
             when(io.stream_resp.valid) {
                 // *** [DEBUG PRINTF] ***
-                printf(
-                  p"[Core ${coreId}] sFetchStream: LATCHING Stream! " +
-                      p"req_addr=0x${Hexadecimal(next_fetch_addr_reg)}, " +
-                      p"recv_data=0x${Hexadecimal(io.stream_resp.data(63, 32))}...\n"
-                )
+                // printf(
+                //   p"[Core ${coreId}] sFetchStream: LATCHING Stream! " +
+                //       p"req_addr=0x${Hexadecimal(next_fetch_addr_reg)}, " +
+                //       p"recv_data=0x${Hexadecimal(io.stream_resp.data(63, 32))}...\n"
+                // )
                 // 收到响应,停止请求
                 // io.stream_req.valid := false.B
 
