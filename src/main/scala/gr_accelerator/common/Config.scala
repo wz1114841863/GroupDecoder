@@ -208,3 +208,109 @@ object DecoderBankParams {
     // 提供默认配置
     val default: DecoderBankParams = apply()
 }
+
+/** 脉动阵列 (SystolicArray) 的参数
+  */
+case class SystolicArrayParams(
+    N: Int, // 维度 (N x N)
+    weightWidth: Int,
+
+    // 派生参数
+    totalWeights: Int, // N*N
+    saReadAddrWidth: Int // log2Ceil(N*N)
+)
+
+object SystolicArrayParams {
+    def apply(
+        N: Int = 128, // 目标 N=128
+        weightWidth: Int = 4
+    ): SystolicArrayParams = {
+
+        val totalWeights = N * N
+        val saReadAddrWidth = log2Ceil(totalWeights) // 14 bits
+
+        SystolicArrayParams(
+          N,
+          weightWidth,
+          totalWeights,
+          saReadAddrWidth
+        )
+    }
+    val default: SystolicArrayParams = apply()
+}
+
+/** WeightSRAM (双缓冲) 的参数
+  *
+  * @param P
+  *   并行 度 (来自 DecoderBank)
+  * @param groupSize
+  *   组 大小 (来自 Core)
+  * @param weightWidth
+  *   权重 位宽
+  * @param bankWriteAddrWidth
+  *   组 内写入 地址 (0..511)
+  * @param N
+  *   脉动阵列 维度
+  * @param totalWeights
+  *   权重 总数 (N*N)
+  * @param saReadAddrWidth
+  *   SA 逻辑读取 地址 (0..16383)
+  * @param numBanks
+  *   物理 Bank 数量 (P=8)
+  * @param bankDepth
+  *   每个 物理 Bank 的深度 (e.g., 16384 / 8 = 2048)
+  * @param bankAddrWidth
+  *   物理 Bank 地址 宽度 (0..2047)
+  */
+case class WeightSRAMParams(
+    // 从 DecoderBank 继承
+    P: Int,
+    groupSize: Int,
+    weightWidth: Int,
+    sramAddrWidth: Int, // 组 内地址 (0..511)
+
+    // 从 SystolicArray 继承
+    N: Int,
+    totalWeights: Int,
+    saReadAddrWidth: Int, // SA 逻辑地址 (0..16383)
+
+    // 派生参数
+    numBanks: Int, // P=8
+    bankDepth: Int, // 2048 (每个 Bank 存 4 组)
+    bankAddrWidth: Int // 11 bits (log2(2048))
+)
+
+object WeightSRAMParams {
+    def apply(
+        decoderParams: DecoderBankParams = DecoderBankParams.default,
+        saParams: SystolicArrayParams = SystolicArrayParams.default
+    ): WeightSRAMParams = {
+
+        // 检查 N*N 是否可以被 P 和 groupSize 整除
+        val totalWeights = saParams.N * saParams.N
+        val groupSize = decoderParams.coreParams.groupSize
+        val P = decoderParams.P
+
+        assert(totalWeights % groupSize == 0, "N*N 必须能被 groupSize 整除")
+        val numGroups = totalWeights / groupSize // e.g., 32
+        assert(numGroups % P == 0, "总组数必须能被并行度 P 整除")
+
+        val bankDepth = totalWeights / P // e.g., 16384 / 8 = 2048
+        val bankAddrWidth = log2Ceil(bankDepth) // 11
+
+        WeightSRAMParams(
+          P,
+          groupSize,
+          saParams.weightWidth,
+          decoderParams.coreParams.outputSramAddrWidth, // 9 bits (0..511)
+          saParams.N,
+          totalWeights,
+          saParams.saReadAddrWidth, // 14 bits
+          P,
+          bankDepth,
+          bankAddrWidth
+        )
+    }
+
+    val default: WeightSRAMParams = apply()
+}
