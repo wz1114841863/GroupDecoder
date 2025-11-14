@@ -314,3 +314,26 @@ object WeightSRAMParams {
 
     val default: WeightSRAMParams = apply()
 }
+
+// --- PE 单元的参数 ---
+case class PEParams(
+    actWidth: Int,
+    weightWidth: Int,
+    zpWidth: Int,
+    scaleWidth: Int,
+    accWidth: Int
+)
+
+object PEParams {
+    def apply(
+        actWidth: Int = 8,
+        weightWidth: Int = 4,
+        zpWidth: Int = 8,
+        scaleWidth: Int = 16,
+        accWidth: Int = 32
+    ): PEParams = {
+        new PEParams(actWidth, weightWidth, zpWidth, scaleWidth, accWidth)
+    }
+
+    val default: PEParams = apply()
+}
