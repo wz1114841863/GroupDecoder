@@ -13,7 +13,11 @@ import gr_accelerator.common._
 class WeightSRAMSpec extends AnyFreeSpec with Matchers with ChiselSim {
 
     // --- 1. 辅助函数 ---
-    implicit val p: WeightSRAMParams = WeightSRAMParams.default
+    val stressParams = WeightSRAMParams(
+      decoderParams = DecoderBankParams.default,
+      saParams = SystolicArrayParams(N = 128)
+    )
+    implicit val p: WeightSRAMParams = stressParams
 
     def resetPorts(dut: WeightSRAM): Unit = {
         dut.io.flip.poke(false.B)

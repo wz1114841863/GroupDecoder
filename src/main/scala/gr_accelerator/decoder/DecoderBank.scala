@@ -45,7 +45,15 @@ class DecoderBankIO(val p: DecoderBankParams) extends Bundle {
       * 暴露 P=8 个并行的 SRAM 写入端口
       */
     val sram_write_outputs = Output(
-      Vec(p.P, new GRDecoderCoreIO(p.coreParams).sram_write.cloneType)
+      Vec(
+        p.P,
+        new Bundle {
+            val valid = Bool()
+            val addr = UInt(p.coreParams.outputSramAddrWidth.W)
+            val data = UInt(p.coreParams.weightWidth.W)
+            val wave_index = UInt(8.W) // 假设 8-bit 足够
+        }
+      )
     )
 
     val meta_write_outputs = Output(
@@ -137,8 +145,31 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
     )
     stream_arb.io.out.ready := true.B
 
+    // --- FSM 定义 ---
+    object State extends ChiselEnum {
+        val sIdle, sRun, sDone = Value
+    }
+    val state = RegInit(State.sIdle)
+
+    // 每个解码器 的任务计数器
+    val groups_decoded_per_core = RegInit(VecInit(Seq.fill(p.P)(0.U(8.W))))
+    val groups_total_per_core = RegInit(VecInit(Seq.fill(p.P)(0.U(8.W))))
+
+    // 跟踪哪个解码器 正在忙
+    val core_is_busy = RegInit(VecInit(Seq.fill(p.P)(false.B)))
+    val base_idx_reg = Reg(UInt(p.coreParams.metaGroupIndexWidth.W))
+
     // 暴露 P=8 个写入 端口
-    io.sram_write_outputs := decoders.map(_.sram_write)
+    // io.sram_write_outputs := decoders.map(_.sram_write)
+
+    // --- SRAM 写入端口连接逻辑 ---
+    // 我们需要将 Core 的输出和 FSM 的 wave_index 结合起来
+    for (i <- 0 until p.P) {
+        io.sram_write_outputs(i).valid := decoders(i).sram_write.valid
+        io.sram_write_outputs(i).addr := decoders(i).sram_write.addr
+        io.sram_write_outputs(i).data := decoders(i).sram_write.data
+        io.sram_write_outputs(i).wave_index := groups_decoded_per_core(i)
+    }
 
     // --- 响应分发 (不再广播数据) ---
     for (i <- p_grp) {
@@ -189,18 +220,6 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
     }
 
     // --- 5. FSM(状态机, "Group_ID % P" 方案) ---
-    object State extends ChiselEnum {
-        val sIdle, sRun, sDone = Value
-    }
-    val state = RegInit(State.sIdle)
-
-    // 每个解码器 的任务计数器
-    val groups_decoded_per_core = RegInit(VecInit(Seq.fill(p.P)(0.U(8.W))))
-    val groups_total_per_core = RegInit(VecInit(Seq.fill(p.P)(0.U(8.W))))
-
-    // 跟踪哪个解码器 正在忙
-    val core_is_busy = RegInit(VecInit(Seq.fill(p.P)(false.B)))
-    val base_idx_reg = Reg(UInt(p.coreParams.metaGroupIndexWidth.W))
 
     // 默认输出
     io.bank_finished := false.B

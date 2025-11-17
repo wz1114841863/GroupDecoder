@@ -56,6 +56,9 @@ class PE(val p: PEParams = PEParams.default) extends Module {
         reg_weight := io.in_weight
         reg_zp := io.in_zp
         reg_scale := io.in_scale
+
+        // [DEBUG]
+        // printf(p"[PE] Loading: W=$io.in_weight ZP=$io.in_zp\n")
     }
 
     // 始终输出当前存储的权重给下一级,支持链式加载
@@ -71,7 +74,7 @@ class PE(val p: PEParams = PEParams.default) extends Module {
     // MAC 计算 (简化版: INT4 * INT8 + Sum)
     // 实际硬件这里会应用 (W - ZP) * Scale,我们暂时简化验证通路
     // 注意:这里的计算逻辑在 load_en=true 时结果无效,但不影响功能
-    val mac_res = (reg_weight.asSInt * reg_act)
+    val mac_res = (reg_weight.zext * reg_act)
     val sum_next = io.in_sum + mac_res
 
     reg_sum := sum_next

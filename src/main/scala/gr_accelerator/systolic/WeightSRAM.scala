@@ -110,6 +110,13 @@ class WeightSRAM(val p: WeightSRAMParams) extends Module {
           data_from_a, // flip=1: 读取 Bank A
           data_from_b // flip=0: 读取 Bank B
         )
+
+        // [DEBUG]
+        // when(io.flip) { // 假设 flip=true 是读 A (根据之前的测试)
+        //     printf(
+        //       p"[WeightSRAM] Port $i Read A: Addr=$physical_addr_for_bank_i Data=$data_from_a\n"
+        //     )
+        // }
     }
 
     // SyncReadMem 有 1 个周期的读取 延迟.

@@ -295,22 +295,18 @@ object WeightSRAMParams {
         // 2. 计算脉动阵列单次需要的权重数
         val weightsPerTile = saParams.N * saParams.N
 
-        // 3. 确定 SRAM 总大小
-        // 它必须至少能装下一个 Tile (N*N)
-        // 它也必须至少能装下一次解码波次 (P*GroupSize)
-        // 且为了地址对齐,最好是两者的公倍数,或者简单地取最大值的整数倍
-        // 这里我们取: 至少能装下 weightsPerWave,且是 weightsPerWave 的倍数
-        // 这样保证了 SRAM 可以存储整数个 "解码波次"
+        // 3.计算按列分块所需的总容量
+        // 我们需要 N 个 Group 来填充 N 列,每个 Group 大小为 groupSize
+        val weightsPerColumnTile = saParams.N * groupSize
 
-        // 简单的策略:取两者中的最大值,并向上取整到 weightsPerWave 的倍数
-        // 对于 N=16 (256) 和 P=8, GS=512 (4096):
-        // max(256, 4096) = 4096. totalWeights = 4096.
+        // 4. 确定 SRAM 总大小
+        // 它必须能装下上述所有情况的最大值
+        // max(N*N, P*GS, N*GS) -> 通常 N*GS 是最大的
+        val rawTotal = math.max(weightsPerTile, math.max(weightsPerWave, weightsPerColumnTile))
 
-        val rawTotal = math.max(weightsPerTile, weightsPerWave)
-        // 向上取整到 weightsPerWave 的倍数
-        val totalWeights =
-            if (rawTotal % weightsPerWave == 0) rawTotal
-            else ((rawTotal / weightsPerWave) + 1) * weightsPerWave
+        // 向上取整到 weightsPerWave 的倍数 (保证解码波次对齐)
+        val totalWeights = if (rawTotal % weightsPerWave == 0) rawTotal
+                           else ((rawTotal / weightsPerWave) + 1) * weightsPerWave
 
         // 4. 重新检查断言 (现在应该总是通过的)
         assert(totalWeights % groupSize == 0, "SRAM大小必须容纳整数个Group")

@@ -113,6 +113,11 @@ class WeightLoader(val p: WeightSRAMParams) extends Module {
             // 推送一行到阵列
             io.array_load_en := true.B
 
+            // [DEBUG]
+            printf(p"[WeightLoader] Pushing Row $row_idx to Array:\n")
+            printf(p"  W[0]=${row_buffer(0)} W[1]=${row_buffer(1)} ...\n")
+            printf(p"  W[2]=${row_buffer(2)} W[3]=${row_buffer(3)} ...\n")
+
             // 检查是否完成所有行
             when(row_idx === (N - 1).U) {
                 state := State.sDone
