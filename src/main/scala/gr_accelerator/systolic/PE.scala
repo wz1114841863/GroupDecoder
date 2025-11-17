@@ -7,22 +7,27 @@ import gr_accelerator.common._
 /** PE (Processing Element) 的 IO 端口
   */
 class PEIO(val p: PEParams) extends Bundle {
-    // --- 数据流动: 激活 (西 -> 东) ---
-    val A_in = Input(SInt(p.actWidth.W)) // 激活输入 (INT8)
-    val A_out = Output(SInt(p.actWidth.W)) // 激活输出 (INT8)
+    // --- 水平流动: 激活 (Activations) ---
+    val in_act = Input(SInt(p.actWidth.W)) // 来自左侧
+    val out_act = Output(SInt(p.actWidth.W)) // 传给右侧
 
-    // --- 数据流动: 部分和 (北 -> 南) ---
-    val O_in = Input(SInt(p.accWidth.W)) // 部分和输入
-    val O_out = Output(SInt(p.accWidth.W)) // 部分和输出
+    // --- 垂直流动: 部分和 (Partial Sums) ---
+    val in_sum = Input(SInt(p.accWidth.W)) // 来自上方
+    val out_sum = Output(SInt(p.accWidth.W)) // 传给下方
 
-    // --- 静态加载端口 (来自 WeightLoader 和 MetadataLoader) ---
-    // (这些端口用于在 "sLoadWeights" 阶段 预加载)
-    val W_in = Input(UInt(p.weightWidth.W)) // 权重 (INT4)
-    val ZP_in = Input(UInt(p.zpWidth.W)) // 零点 (UInt8)
-    val Scale_in = Input(UInt(p.scaleWidth.W)) // 缩放因子 (BF16)
+    // --- 垂直流动: 权重 & 元数据 (Weight Path) ---
+    // 在加载阶段,这些数据从上方流入,传给下方
+    val in_weight = Input(UInt(p.weightWidth.W))
+    val in_zp = Input(UInt(p.zpWidth.W))
+    val in_scale = Input(UInt(p.scaleWidth.W))
 
-    // --- 控制信号 (来自 SA_Controller) ---
-    val load_w_en = Input(Bool()) // 权重加载使能
+    val out_weight = Output(UInt(p.weightWidth.W))
+    val out_zp = Output(UInt(p.zpWidth.W))
+    val out_scale = Output(UInt(p.scaleWidth.W))
+
+    // --- 控制信号 ---
+    // true: 加载模式 (移位); false: 计算模式 (固定)
+    val ctrl_load_en = Input(Bool())
 }
 
 /** 脉动阵列处理单元 (PE)
@@ -31,38 +36,44 @@ class PEIO(val p: PEParams) extends Bundle {
   *
   * 计算: 简化的 INT4 * INT8 MAC
   */
-class PE(val p: PEParams) extends Module {
+class PE(val p: PEParams = PEParams.default) extends Module {
     val io = IO(new PEIO(p))
 
-    // --- 1. 内部状态寄存器 (权重固定) ---
-    // 使用 RegInit 初始化
-    val W_reg = RegInit(0.U(p.weightWidth.W))
-    val ZP_reg = RegInit(0.U(p.zpWidth.W))
-    val Scale_reg = RegInit(0.U(p.scaleWidth.W))
+    // --- 1. 状态寄存器 (Stationary Storage) ---
+    val reg_weight = RegInit(0.U(p.weightWidth.W))
+    val reg_zp = RegInit(0.U(p.zpWidth.W))
+    val reg_scale = RegInit(0.U(p.scaleWidth.W))
 
-    // --- 2. 流水线寄存器 (数据流动) ---
-    val A_reg = RegInit(0.S(p.actWidth.W))
-    val O_reg = RegInit(0.S(p.accWidth.W))
+    // --- 2. 数据流寄存器 (Pipelining) ---
+    val reg_act = RegInit(0.S(p.actWidth.W))
+    val reg_sum = RegInit(0.S(p.accWidth.W))
 
-    // --- 3. 权重加载逻辑 ---
-    when(io.load_w_en) {
-        W_reg := io.W_in
-        ZP_reg := io.ZP_in
-        Scale_reg := io.Scale_in
+    // --- 3. 权重加载逻辑 (Daisy Chain) ---
+    // 这是一个移位逻辑.
+    // 当 load_en 有效时,接收上方数据.
+    // 无论何时,都将当前寄存器值输出给下方,形成链条.
+    when(io.ctrl_load_en) {
+        reg_weight := io.in_weight
+        reg_zp := io.in_zp
+        reg_scale := io.in_scale
     }
 
-    // --- 4. 激活流动逻辑 (西 -> 东) ---
-    A_reg := io.A_in
-    io.A_out := A_reg // 输出 T-1 周期的激活
+    // 始终输出当前存储的权重给下一级,支持链式加载
+    io.out_weight := reg_weight
+    io.out_zp := reg_zp
+    io.out_scale := reg_scale
 
-    // --- 5. 部分和流动逻辑 (北 -> 南) ---
-    // O_reg (部分和) 与 A_reg (激活) 同步延迟
-    O_reg := io.O_in
+    // --- 4. 激活与计算逻辑 ---
+    // 锁存输入激活
+    reg_act := io.in_act
+    io.out_act := reg_act // 传给右侧
 
-    // MAC (使用 T-1 锁存的 A_reg 和 W_reg)
-    val mac_result = (W_reg.asSInt * A_reg)
+    // MAC 计算 (简化版: INT4 * INT8 + Sum)
+    // 实际硬件这里会应用 (W - ZP) * Scale,我们暂时简化验证通路
+    // 注意:这里的计算逻辑在 load_en=true 时结果无效,但不影响功能
+    val mac_res = (reg_weight.asSInt * reg_act)
+    val sum_next = io.in_sum + mac_res
 
-    // O_out 是组合逻辑
-    // (使用 T-1 锁存的 O_reg 和 T-1 的 mac_result)
-    io.O_out := O_reg + mac_result
+    reg_sum := sum_next
+    io.out_sum := reg_sum // 传给下方
 }

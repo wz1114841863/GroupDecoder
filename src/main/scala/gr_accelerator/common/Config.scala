@@ -222,7 +222,7 @@ case class SystolicArrayParams(
 
 object SystolicArrayParams {
     def apply(
-        N: Int = 128, // 目标 N=128
+        N: Int = 16,
         weightWidth: Int = 4
     ): SystolicArrayParams = {
 

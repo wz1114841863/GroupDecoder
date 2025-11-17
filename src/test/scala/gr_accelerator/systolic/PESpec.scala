@@ -8,92 +8,98 @@ import org.scalatest.matchers.must.Matchers
 
 import gr_accelerator.common._
 
-/** PESpec (PE 单元) 测试模块
+/** PESpec (PE 单元) 测试模块 针对新的权重固定 (Weight Stationary) 架构进行验证
   */
 class PESpec extends AnyFreeSpec with Matchers with ChiselSim {
-    "should correctly load and flow data with correct timing" in {
-        implicit val p: PEParams = PEParams.default
-        simulate(new PE(p)) { dut =>
-            println("--- [PESpec] 开始测试 ---")
+    implicit val p: PEParams = PEParams.default
 
-            dut.reset.poke(true.B)
-            dut.clock.step(1)
-            dut.reset.poke(false.B)
-            dut.clock.step(1) // T=0 (复位完成)
+    "PE (Weight Stationary, Streaming)" - {
+        "should correctly LOAD weights (Shift Mode)" in {
+            simulate(new PE(p)) { dut =>
+                println("--- [PESpec] Testing Load/Shift Mode ---")
 
-            // --- 1. 周期 T=0: 加载权重 ---
-            println("[T=0] 加载 W_reg = 5")
-            dut.io.load_w_en.poke(true.B)
-            dut.io.W_in.poke(5.U) // W_reg = 5
-            dut.io.A_in.poke(0.S)
-            dut.io.O_in.poke(0.S)
+                dut.reset.poke(true.B)
+                dut.clock.step(1)
+                dut.reset.poke(false.B)
 
-            // 检查 T=0 时的输出 (来自复位)
-            dut.io.A_out.expect(0.S)
-            dut.io.O_out.expect(0.S) // O_reg(0) + (W_reg(0) * A_reg(0)) = 0
+                // 1. 开启加载模式
+                dut.io.ctrl_load_en.poke(true.B)
 
-            dut.clock.step(1) // T=0 结束, T=1 开始
+                // 2. 输入数据 (模拟从上方 PE 传入)
+                val w_val = 5
+                val zp_val = 2
+                val scale_val = 10
 
-            // --- 2. 周期 T=1: 泵入第一组数据 ---
-            // 内部 (T=1 时钟沿锁存):
-            // W_reg = 5 (来自 T=0 加载)
-            // A_reg = 0 (来自 T=0 A_in)
-            // O_reg = 0 (来自 T=0 O_in)
-            println("[T=1] 泵入 A=2, O=10")
-            dut.io.load_w_en.poke(false.B)
-            dut.io.A_in.poke(2.S) // 泵入 A=2
-            dut.io.O_in.poke(10.S) // 泵入 O=10
+                dut.io.in_weight.poke(w_val.U)
+                dut.io.in_zp.poke(zp_val.U)
+                dut.io.in_scale.poke(scale_val.U)
 
-            // 检查 T=1 时的输出 (来自 T=0 的锁存值)
-            dut.io.A_out.expect(0.S) // = A_reg (0)
-            // O_out = O_reg(0) + (W_reg(5) * A_reg(0)) = 0 + (5 * 0) = 0
-            dut.io.O_out.expect(0.S)
+                // 3. Step 1 (寄存器锁存)
+                dut.clock.step(1)
 
-            dut.clock.step(1) // T=1 结束, T=2 开始
+                // 4. 验证输出 (模拟传给下方 PE)
+                // 由于 io.out_weight := reg_weight,且 reg_weight 在时钟沿更新
+                // 所以 T+1 时刻输出应该等于 T 时刻的输入
+                dut.io.out_weight.expect(w_val.U)
+                dut.io.out_zp.expect(zp_val.U)
+                dut.io.out_scale.expect(scale_val.U)
 
-            // --- 3. 周期 T=2: 泵入第二组数据, 检查第一组结果 ---
-            // 内部 (T=2 时钟沿锁存):
-            // A_reg = 2 (来自 T=1 A_in)
-            // O_reg = 10 (来自 T=1 O_in)
-            println("[T=2] 泵入 A=-3, O=100")
-            dut.io.A_in.poke(-3.S)
-            dut.io.O_in.poke(100.S)
+                println("   Load verified: Data latched and output correctly.")
+            }
+        }
 
-            // 检查 T=2 时的输出 (来自 T=1 的锁存值)
-            dut.io.A_out.expect(2.S) // = A_reg (2)
-            // [FIXED] O_out = O_reg(10) + (W_reg(5) * A_reg(2)) = 10 + 10 = 20
-            dut.io.O_out.expect(20.S)
+        "should correctly COMPUTE and FLOW data" in {
+            simulate(new PE(p)) { dut =>
+                println("--- [PESpec] Testing Compute/Flow Mode ---")
 
-            dut.clock.step(1) // T=2 结束, T=3 开始
+                dut.reset.poke(true.B)
+                dut.clock.step(1)
+                dut.reset.poke(false.B)
 
-            // --- 4. 周期 T=3: 检查第二组结果 ---
-            // 内部 (T=3 时钟沿锁存):
-            // A_reg = -3 (来自 T=2 A_in)
-            // O_reg = 100 (来自 T=2 O_in)
-            println("[T=3] 泵入 A=0, O=0")
-            dut.io.A_in.poke(0.S)
-            dut.io.O_in.poke(0.S)
+                // --- Phase 1: 加载权重 ---
+                dut.io.ctrl_load_en.poke(true.B)
+                dut.io.in_weight.poke(4.U) // Weight = 4
+                dut.clock.step(1)
+                dut.io.ctrl_load_en.poke(false.B) // 锁定权重
 
-            // 检查 T=3 时的输出 (来自 T=2 的锁存值)
-            dut.io.A_out.expect(-3.S) // = A_reg (-3)
-            // [FIXED] O_out = O_reg(100) + (W_reg(5) * A_reg(-3)) = 100 - 15 = 85
-            dut.io.O_out.expect(85.S)
+                // 验证权重已锁定
+                dut.io.out_weight.expect(4.U)
 
-            dut.clock.step(1) // T=3 结束, T=4 开始
+                // --- Phase 2: 执行计算 (Pipeline Check) ---
+                // 我们的 PE 逻辑:
+                // 1. reg_act := io.in_act
+                // 2. mac_res = reg_weight * reg_act
+                // 3. reg_sum := io.in_sum + mac_res
+                // 4. io.out_sum := reg_sum
 
-            // --- 5. 周期 T=4: 检查第三组结果 ---
-            // 内部 (T=4 时钟沿锁存):
-            // A_reg = 0 (来自 T=3 A_in)
-            // O_reg = 0 (来自 T=3 O_in)
-            println("[T=4] 检查最后结果")
+                // T=0: 输入激活
+                val act_val = 3
+                dut.io.in_act.poke(act_val.S) // A = 3
+                dut.io.in_sum.poke(0.S)
 
-            // 检查 T=4 时的输出 (来自 T=3 的锁存值)
-            dut.io.A_out.expect(0.S) // = A_reg (0)
-            // [FIXED] O_out = O_reg(0) + (W_reg(5) * A_reg(0)) = 0 + 0 = 0
-            dut.io.O_out.expect(0.S)
+                dut.clock.step(1)
 
-            println("--- [PESpec] 测试通过 ---")
+                // T=1:
+                // reg_act 现在是 3 (来自 T=0 的输入)
+                // 验证激活传递 (水平流)
+                dut.io.out_act.expect(act_val.S)
+
+                // 此时 MAC 正在计算: 4 (Weight) * 3 (reg_act) = 12
+                // 我们需要在 T=1 提供 in_sum 来与这个 MAC 结果相加
+                val sum_in_val = 10
+                dut.io.in_sum.poke(sum_in_val.S)
+
+                dut.clock.step(1)
+
+                // T=2:
+                // reg_sum 现在应该锁存了: in_sum(T=1) + (Weight * reg_act(T=1))
+                // Result = 10 + (4 * 3) = 22
+                dut.io.out_sum.expect(22.S)
+
+                println(
+                  "   Compute verified: MAC calculation and pipeline delay are correct."
+                )
+            }
         }
     }
-
 }
