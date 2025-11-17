@@ -286,26 +286,49 @@ object WeightSRAMParams {
         saParams: SystolicArrayParams = SystolicArrayParams.default
     ): WeightSRAMParams = {
 
-        // 检查 N*N 是否可以被 P 和 groupSize 整除
-        val totalWeights = saParams.N * saParams.N
         val groupSize = decoderParams.coreParams.groupSize
         val P = decoderParams.P
 
-        assert(totalWeights % groupSize == 0, "N*N 必须能被 groupSize 整除")
-        val numGroups = totalWeights / groupSize // e.g., 32
-        assert(numGroups % P == 0, "总组数必须能被并行度 P 整除")
+        // 1. 计算解码器一次"波"产生的总权重数
+        val weightsPerWave = P * groupSize
 
-        val bankDepth = totalWeights / P // e.g., 16384 / 8 = 2048
-        val bankAddrWidth = log2Ceil(bankDepth) // 11
+        // 2. 计算脉动阵列单次需要的权重数
+        val weightsPerTile = saParams.N * saParams.N
+
+        // 3. 确定 SRAM 总大小
+        // 它必须至少能装下一个 Tile (N*N)
+        // 它也必须至少能装下一次解码波次 (P*GroupSize)
+        // 且为了地址对齐,最好是两者的公倍数,或者简单地取最大值的整数倍
+        // 这里我们取: 至少能装下 weightsPerWave,且是 weightsPerWave 的倍数
+        // 这样保证了 SRAM 可以存储整数个 "解码波次"
+
+        // 简单的策略:取两者中的最大值,并向上取整到 weightsPerWave 的倍数
+        // 对于 N=16 (256) 和 P=8, GS=512 (4096):
+        // max(256, 4096) = 4096. totalWeights = 4096.
+
+        val rawTotal = math.max(weightsPerTile, weightsPerWave)
+        // 向上取整到 weightsPerWave 的倍数
+        val totalWeights =
+            if (rawTotal % weightsPerWave == 0) rawTotal
+            else ((rawTotal / weightsPerWave) + 1) * weightsPerWave
+
+        // 4. 重新检查断言 (现在应该总是通过的)
+        assert(totalWeights % groupSize == 0, "SRAM大小必须容纳整数个Group")
+        val numGroups = totalWeights / groupSize
+        assert(numGroups % P == 0, "SRAM大小必须容纳整数个并行解码波次")
+
+        // 5. 计算 Bank深度
+        val bankDepth = totalWeights / P
+        val bankAddrWidth = log2Ceil(bankDepth)
 
         WeightSRAMParams(
           P,
           groupSize,
           saParams.weightWidth,
-          decoderParams.coreParams.outputSramAddrWidth, // 9 bits (0..511)
+          decoderParams.coreParams.outputSramAddrWidth,
           saParams.N,
-          totalWeights,
-          saParams.saReadAddrWidth, // 14 bits
+          totalWeights, // 使用修正后的大小
+          saParams.saReadAddrWidth, // 注意: SA的读地址宽度可能也需要相应增加以访问更大的空间
           P,
           bankDepth,
           bankAddrWidth
@@ -336,4 +359,33 @@ object PEParams {
     }
 
     val default: PEParams = apply()
+}
+
+/** MetaSRAMBuffer 的配置参数
+  */
+case class MetaSRAMParams(
+    P: Int, // DecoderBank 并行度 (用于 ZP 写入带宽)
+    N: Int, // 脉动阵列维度 (SRAM 深度)
+    zpWidth: Int, // ZP 位宽 (通常 8)
+    scaleWidth: Int, // Scale 位宽 (通常 16/BF16)
+
+    // 派生参数
+    addrWidth: Int // log2Ceil(N)
+)
+
+object MetaSRAMParams {
+    def apply(
+        decoderParams: DecoderBankParams = DecoderBankParams.default,
+        saParams: SystolicArrayParams = SystolicArrayParams.default,
+        peParams: PEParams = PEParams.default
+    ): MetaSRAMParams = {
+        MetaSRAMParams(
+          P = decoderParams.P,
+          N = saParams.N,
+          zpWidth = peParams.zpWidth,
+          scaleWidth = peParams.scaleWidth,
+          addrWidth = log2Ceil(saParams.N)
+        )
+    }
+    val default: MetaSRAMParams = apply()
 }

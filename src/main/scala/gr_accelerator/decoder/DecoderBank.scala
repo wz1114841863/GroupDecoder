@@ -47,6 +47,21 @@ class DecoderBankIO(val p: DecoderBankParams) extends Bundle {
     val sram_write_outputs = Output(
       Vec(p.P, new GRDecoderCoreIO(p.coreParams).sram_write.cloneType)
     )
+
+    val meta_write_outputs = Output(
+      Vec(
+        p.P,
+        new Bundle {
+            val valid = Bool()
+            val zp = UInt(p.coreParams.zpWidth.W)
+            // 我们需要输出 wave_index 以便外部知道写到哪里
+            // 这里的宽度应与 FSM 中的计数器宽度匹配 (目前设为 8.W)
+            val wave_index = UInt(8.W) // 假设 8-bit 足够 (支持 256 波)
+            // (可选) 如果以后需要输出 group_index 或 bank_addr,也可以加在这里
+            // val addr = ...
+        }
+      )
+    )
 }
 
 /** DecoderBank (顶层分发模块)
@@ -197,6 +212,20 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
         decoders(i).group_index := base_idx_reg + (groups_decoded_per_core(
           i
         ) * p.P.U) + i.U
+    }
+
+    // --- 连接元数据输出端口 (ZP 和 Wave Index) ---
+    // 因为 groups_decoded_per_core 已经定义了,现在可以连接了
+    for (i <- p_grp) {
+        // Valid 信号复用发给 Core 的 valid 信号
+        // (当 Core 收到 Meta 响应时,我们也向外输出 ZP)
+        io.meta_write_outputs(i).valid := decoders(i).meta_resp.valid
+
+        // ZP 直接来自 decoder 接收到的数据 (已经过 Mux 处理)
+        io.meta_write_outputs(i).zp := decoders(i).meta_resp.zero_point
+
+        // Wave Index 直接来自 FSM 计数器
+        io.meta_write_outputs(i).wave_index := groups_decoded_per_core(i)
     }
 
     switch(state) {

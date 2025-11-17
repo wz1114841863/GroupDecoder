@@ -503,17 +503,41 @@ class DecoderBankSpec extends AnyFreeSpec with Matchers with ChiselSim {
         val golden_G2 = Array.fill(128)(3) // k=2, zp=7, "1011" -> 3
         val golden_G3 = Array.fill(128)(6) // k=1, zp=10, "11101" -> 6
 
-        // Core 0: G100, G104
-        val golden_Core0 = golden_G0 ++ golden_G0
-        // Core 1: G101, G105
-        val golden_Core1 = golden_G1 ++ golden_G1
-        // Core 2: G102, G106
-        val golden_Core2 = golden_G2 ++ golden_G2
-        // Core 3: G103, G107
-        val golden_Core3 = golden_G3 ++ golden_G3
+        // // Core 0: G100, G104
+        // val golden_Core0 = golden_G0 ++ golden_G0
+        // // Core 1: G101, G105
+        // val golden_Core1 = golden_G1 ++ golden_G1
+        // // Core 2: G102, G106
+        // val golden_Core2 = golden_G2 ++ golden_G2
+        // // Core 3: G103, G107
+        // val golden_Core3 = golden_G3 ++ golden_G3
 
-        val all_golden_banks =
-            Seq(golden_Core0, golden_Core1, golden_Core2, golden_Core3)
+        // val all_golden_banks =
+        //     Seq(golden_Core0, golden_Core1, golden_Core2, golden_Core3)
+
+        val golden_Weights_Banks = Seq(
+          golden_G0 ++ golden_G0, // Core 0
+          golden_G1 ++ golden_G1, // Core 1
+          golden_G2 ++ golden_G2, // Core 2
+          golden_G3 ++ golden_G3 // Core 3
+        )
+
+        // 5. 定义黄金结果 (ZP)
+        // Core 0 处理 G100 (ZP=8), 然后 G104 (ZP=8)
+        val golden_ZP_Core0 = Seq(8, 8)
+        // Core 1 处理 G101 (ZP=5), 然后 G105 (ZP=5)
+        val golden_ZP_Core1 = Seq(5, 5)
+        // Core 2 处理 G102 (ZP=7), 然后 G106 (ZP=7)
+        val golden_ZP_Core2 = Seq(7, 7)
+        // Core 3 处理 G103 (ZP=10), 然后 G107 (ZP=10)
+        val golden_ZP_Core3 = Seq(10, 10)
+
+        val golden_ZP_Banks = Seq(
+          golden_ZP_Core0,
+          golden_ZP_Core1,
+          golden_ZP_Core2,
+          golden_ZP_Core3
+        )
 
         // 5. 启动模拟
         simulate(new DecoderBank(p)) { dut =>
@@ -527,7 +551,9 @@ class DecoderBankSpec extends AnyFreeSpec with Matchers with ChiselSim {
             dut.clock.step(5)
 
             // 7. 监视输出
-            val capturedWrites = Seq.fill(p.P)(new ArrayBuffer[Int]())
+            val capturedWeights = Seq.fill(p.P)(new ArrayBuffer[Int]())
+            val capturedZPs = Seq.fill(p.P)(new ArrayBuffer[Int]())
+
             var cycles = 0
             // gs=128, N=8, P=4 -> 2 组/Core -> 256 权重/Core
             // 256 * 2 (周期/权重) = 512 周期. + 加载/meta. Timeout 1000
@@ -546,15 +572,36 @@ class DecoderBankSpec extends AnyFreeSpec with Matchers with ChiselSim {
               dut.io.bank_finished.peek().litValue == 0 && cycles < timeout
             ) {
                 for (i <- 0 until p.P) {
+                    // 捕获权重
                     if (
                       dut.io.sram_write_outputs(i).valid.peek().litValue > 0
                     ) {
-                        capturedWrites(i) += dut.io
+                        capturedWeights(i) += dut.io
                             .sram_write_outputs(i)
                             .data
                             .peek()
                             .litValue
                             .toInt
+                    }
+
+                    // 捕获 ZP
+                    if (
+                      dut.io.meta_write_outputs(i).valid.peek().litValue > 0
+                    ) {
+                        val zp = dut.io
+                            .meta_write_outputs(i)
+                            .zp
+                            .peek()
+                            .litValue
+                            .toInt
+                        val wave = dut.io
+                            .meta_write_outputs(i)
+                            .wave_index
+                            .peek()
+                            .litValue
+                            .toInt
+                        capturedZPs(i) += zp
+                        println(s"[Test] Core $i Output ZP: $zp (Wave: $wave)")
                     }
                 }
                 dut.clock.step(1)
@@ -570,28 +617,25 @@ class DecoderBankSpec extends AnyFreeSpec with Matchers with ChiselSim {
             var all_passed = true
             for (i <- 0 until p.P) {
                 println(s"--- 验证 Core ${i} ---")
-                println(
-                  s"Core ${i} captured: ${capturedWrites(i).length} weights"
-                )
-                println(
-                  s"Core ${i} golden:   ${all_golden_banks(i).length} weights"
-                )
 
-                val core_passed =
-                    (capturedWrites(i).toSeq == all_golden_banks(i).toSeq)
-                if (!core_passed) {
-                    println(s"*** FAILED: Core ${i} 内容不匹配! ***")
-                    val firstMismatch =
-                        capturedWrites(i).zip(all_golden_banks(i)).indexWhere {
-                            case (c, g) => c != g
-                        }
-                    if (firstMismatch != -1) {
-                        println(
-                          s"  第一个不匹配在索引 [${firstMismatch}] (预期值: ${all_golden_banks(i)(firstMismatch)})"
-                        )
-                    }
+                // 验证权重 (保持不变)
+                val weights_passed =
+                    (capturedWeights(i).toSeq == golden_Weights_Banks(i).toSeq)
+                if (!weights_passed) {
+                    println(s"*** FAILED: Core ${i} 权重不匹配! ***")
                 }
-                all_passed = all_passed && core_passed
+
+                // 验证 ZP
+                val zp_passed = (capturedZPs(i).toSeq == golden_ZP_Banks(i))
+                if (!zp_passed) {
+                    println(s"*** FAILED: Core ${i} ZP 不匹配! ***")
+                    println(s"  Captured: ${capturedZPs(i).mkString(",")}")
+                    println(s"  Golden:   ${golden_ZP_Banks(i).mkString(",")}")
+                } else {
+                    println(s"  ZP 验证通过: ${capturedZPs(i).mkString(",")}")
+                }
+
+                all_passed = all_passed && weights_passed && zp_passed
             }
 
             all_passed must be(true)
