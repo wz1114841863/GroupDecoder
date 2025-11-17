@@ -147,7 +147,7 @@ class TopAccelerator(val p: TopAcceleratorParams) extends Module {
     // ==============================================================================
 
     object State extends ChiselEnum {
-        val sIdle, sPrefill, sFlip, sLoadMeta, sRun, sDone = Value
+        val sIdle, sPrefill, sFlip, sRun, sDone = Value
     }
     val state = RegInit(State.sIdle)
 
@@ -156,6 +156,11 @@ class TopAccelerator(val p: TopAcceleratorParams) extends Module {
 
     // 双缓冲翻转信号寄存器
     val flip_reg = RegInit(false.B)
+
+    // 完成状态记分板
+    val wl_done_latched = RegInit(false.B)
+    val ml_done_latched = RegInit(false.B)
+    val db_done_latched = RegInit(false.B)
 
     // --- 默认控制信号 ---
     decoderBank.io.start_req.valid := false.B
@@ -246,6 +251,32 @@ class TopAccelerator(val p: TopAcceleratorParams) extends Module {
                 printf("[Top] sRun Finished. Flipping.\n")
             }
         }
+
+        // is(State.sRun) {
+        //     // 在这个状态, 生产者(解码) 和 消费者(加载+计算) 并行运行
+
+        //     // 使用 "记分板" (Latch) 来捕获稍纵即逝的脉冲信号
+        //     // 只要收到一次 done, 就将对应的 latched 寄存器置为 true
+        //     when(weightLoader.io.done) { wl_done_latched := true.B }
+        //     when(metaLoader.io.done) { ml_done_latched := true.B }
+        //     when(decoderBank.io.bank_finished) { db_done_latched := true.B }
+
+        //     // 检查锁存的状态, 而不是瞬时信号
+        //     // 只有当三个子模块都已经在历史的某个时刻完成了任务, 才继续
+        //     when(wl_done_latched && ml_done_latched && db_done_latched) {
+
+        //         // 生产者和消费者都完成了,可以进行下一轮翻转
+        //         state := State.sFlip
+        //         printf(
+        //           p"[Top] sRun Finished (WL=${wl_done_latched}, ML=${ml_done_latched}, DB=${db_done_latched}). Flipping.\n"
+        //         )
+
+        //         // [CRITICAL] 清除记分板, 为下一轮 (Tile 1) 做准备
+        //         wl_done_latched := false.B
+        //         ml_done_latched := false.B
+        //         db_done_latched := false.B
+        //     }
+        // }
 
         is(State.sDone) {
             io.done := true.B

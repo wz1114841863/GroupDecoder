@@ -39,6 +39,17 @@ class WeightSRAMIO(val p: WeightSRAMParams) extends Bundle {
 class WeightSRAM(val p: WeightSRAMParams) extends Module {
     val io = IO(new WeightSRAMIO(p))
 
+    // [DEBUG] 打印关键参数,确认容量计算是否生效
+    // --- 仅在复位后的第一拍打印 Init 信息 ---
+    val hasPrintedInit = RegInit(false.B)
+    when(!hasPrintedInit) {
+        printf(
+          p"[WeightSRAM Init] TotalWeights=${p.totalWeights}, BankDepth=${p.bankDepth}, AddrWidth=${p.bankAddrWidth}\n"
+        )
+        printf(p"[WeightSRAM Init] P=${p.P}, N=${p.N}, GS=${p.groupSize}\n")
+        hasPrintedInit := true.B
+    }
+
     // 1. 实例化 16KB 双缓冲
     // (2 Banks * P=8 Banks * 2048 Depth)
     val bank_a =
@@ -112,11 +123,25 @@ class WeightSRAM(val p: WeightSRAMParams) extends Module {
         )
 
         // [DEBUG]
-        // when(io.flip) { // 假设 flip=true 是读 A (根据之前的测试)
-        //     printf(
-        //       p"[WeightSRAM] Port $i Read A: Addr=$physical_addr_for_bank_i Data=$data_from_a\n"
-        //     )
+        // --- [FIX] 2. 优化读取打印 ---
+        // 只有在地址发生变化时才打印,或者只打印前几个周期
+        // 这里我们使用 RegNext 检测地址变化
+
+        val prev_addr = RegNext(physical_bank_addr)
+        val addr_changed = physical_bank_addr =/= prev_addr
+
+        // 只打印 Port 0 以减少刷屏,且只在地址变化且处于读模式时打印
+        // if (i == 0) {
+        //     when(io.flip && addr_changed) {
+        //         printf(
+        //           p"[WeightSRAM] Port $i Read A: Addr=$physical_bank_addr Data=$data_from_a (Logical: $logical_addr)\n"
+        //         )
+        //     }
         // }
+
+        // 为了调试当前问题,我们可以先彻底注释掉读取打印,
+        // 因为 "Addr=0 Data=9" 的重复已经告诉我们数据是对的 (G0 data),
+        // 只是 WeightLoader 可能一直在读 0 或者读完了停在 0.
     }
 
     // SyncReadMem 有 1 个周期的读取 延迟.

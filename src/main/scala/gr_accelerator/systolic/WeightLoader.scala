@@ -78,6 +78,10 @@ class WeightLoader(val p: WeightSRAMParams) extends Module {
             // WeightSRAM 延迟 = 2 (SyncReadMem + RegNext)
             // sRead (Req) -> sWait (Wait) -> sLatchData (Valid)
             state := State.sWait
+
+            // printf(
+            //   p"[WeightLoader] Chunk $chunk_idx: Requesting Group ${io.base_group_idx + (chunk_idx * P.U)} (Row $row_idx)\n"
+            // )
         }
 
         is(State.sWait) {
@@ -114,9 +118,9 @@ class WeightLoader(val p: WeightSRAMParams) extends Module {
             io.array_load_en := true.B
 
             // [DEBUG]
-            printf(p"[WeightLoader] Pushing Row $row_idx to Array:\n")
-            printf(p"  W[0]=${row_buffer(0)} W[1]=${row_buffer(1)} ...\n")
-            printf(p"  W[2]=${row_buffer(2)} W[3]=${row_buffer(3)} ...\n")
+            // printf(p"[WeightLoader] Pushing Row $row_idx to Array:\n")
+            // printf(p"  W[0]=${row_buffer(0)} W[1]=${row_buffer(1)} ...\n")
+            // printf(p"  W[2]=${row_buffer(2)} W[3]=${row_buffer(3)} ...\n")
 
             // 检查是否完成所有行
             when(row_idx === (N - 1).U) {

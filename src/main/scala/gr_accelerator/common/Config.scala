@@ -302,11 +302,15 @@ object WeightSRAMParams {
         // 4. 确定 SRAM 总大小
         // 它必须能装下上述所有情况的最大值
         // max(N*N, P*GS, N*GS) -> 通常 N*GS 是最大的
-        val rawTotal = math.max(weightsPerTile, math.max(weightsPerWave, weightsPerColumnTile))
+        val rawTotal = math.max(
+          weightsPerTile,
+          math.max(weightsPerWave, weightsPerColumnTile)
+        )
 
         // 向上取整到 weightsPerWave 的倍数 (保证解码波次对齐)
-        val totalWeights = if (rawTotal % weightsPerWave == 0) rawTotal
-                           else ((rawTotal / weightsPerWave) + 1) * weightsPerWave
+        val totalWeights =
+            if (rawTotal % weightsPerWave == 0) rawTotal
+            else ((rawTotal / weightsPerWave) + 1) * weightsPerWave
 
         // 4. 重新检查断言 (现在应该总是通过的)
         assert(totalWeights % groupSize == 0, "SRAM大小必须容纳整数个Group")
@@ -317,6 +321,8 @@ object WeightSRAMParams {
         val bankDepth = totalWeights / P
         val bankAddrWidth = log2Ceil(bankDepth)
 
+        val realSaReadAddrWidth = log2Ceil(totalWeights)
+
         WeightSRAMParams(
           P,
           groupSize,
@@ -324,7 +330,7 @@ object WeightSRAMParams {
           decoderParams.coreParams.outputSramAddrWidth,
           saParams.N,
           totalWeights, // 使用修正后的大小
-          saParams.saReadAddrWidth, // 注意: SA的读地址宽度可能也需要相应增加以访问更大的空间
+          realSaReadAddrWidth,
           P,
           bankDepth,
           bankAddrWidth

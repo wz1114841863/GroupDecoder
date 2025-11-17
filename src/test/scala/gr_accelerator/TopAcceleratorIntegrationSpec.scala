@@ -173,7 +173,7 @@ class TopAcceleratorIntegrationSpec
                         }
 
                         // 2. 检查输出
-                        if (cycles_in_run == 100 && !checked_this_tile) {
+                        if (cycles_in_run == 1000 && !checked_this_tile) {
                             println(
                               s"[Check] Checking output for Tile $current_tile at cycle $cycles"
                             )

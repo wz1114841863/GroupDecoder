@@ -62,9 +62,9 @@ class MetadataLoader(val p: MetaSRAMParams) extends Module {
         is(State.sCapture) {
             // T+1: 锁存数据
             val idx = col_cnt(log2Ceil(p.N) - 1, 0)
-            printf(
-              p"[MetaLoader] Capture: col_cnt=$col_cnt idx=$idx ZP=${io.sram_read_zp}\n"
-            )
+            // printf(
+            //   p"[MetaLoader] Capture: col_cnt=$col_cnt idx=$idx ZP=${io.sram_read_zp}\n"
+            // )
             zp_buffer(idx) := io.sram_read_zp
             scale_buffer(idx) := io.sram_read_scale
 
