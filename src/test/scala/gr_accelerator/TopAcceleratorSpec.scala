@@ -150,8 +150,12 @@ class TopAcceleratorSpec extends AnyFreeSpec with Matchers with ChiselSim {
                 var cycles = 0
                 val timeout = 3000
 
-                // FSM 状态映射 (复制自 TopAccelerator.scala)
-                val sIdle = 0; val sPrefill = 1; val sFlip = 2; val sRun = 3;
+                // FSM 状态映射
+                val sIdle = 0
+                val sPrefill = 1
+                val sFlip = 2
+                val sLoadMeta = 3
+                val sRun = 4
                 val sDone = 5
 
                 var current_state = sIdle

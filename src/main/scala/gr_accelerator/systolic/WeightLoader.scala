@@ -26,6 +26,16 @@ class WeightLoaderIO(val p: WeightSRAMParams) extends Bundle {
 class WeightLoader(val p: WeightSRAMParams) extends Module {
     val io = IO(new WeightLoaderIO(p))
 
+    // 强制对齐断言
+    // 确保起始 Group ID 是 P 的整数倍
+    if (p.P > 1) {
+        // 只有当 base_group_idx 的低 log2(P) 位为 0 时才合法
+        assert(
+          io.base_group_idx(log2Ceil(p.P) - 1, 0) === 0.U,
+          "WeightLoader base_group_idx must be aligned to P!"
+        )
+    }
+
     val N = p.N
     val P = p.P
     val SubBlocks = N / P
@@ -46,7 +56,10 @@ class WeightLoader(val p: WeightSRAMParams) extends Module {
     io.done := false.B
     io.array_load_en := false.B
     io.array_w_in := row_buffer
-    for (i <- 0 until P) io.sram_read_addrs(i) := 0.U
+
+    for (i <- 0 until P) {
+        io.sram_read_addrs(i) := (i * p.groupSize).U
+    }
 
     switch(state) {
         is(State.sIdle) {

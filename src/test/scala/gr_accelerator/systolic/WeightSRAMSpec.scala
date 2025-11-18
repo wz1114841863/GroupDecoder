@@ -22,11 +22,17 @@ class WeightSRAMSpec extends AnyFreeSpec with Matchers with ChiselSim {
     def resetPorts(dut: WeightSRAM): Unit = {
         dut.io.flip.poke(false.B)
         for (i <- 0 until p.P) {
+            // 写入端口复位 (保持 0 没问题, 因为 valid=false)
             dut.io.write_ports(i).valid.poke(false.B)
             dut.io.write_ports(i).addr.poke(0.U)
             dut.io.write_ports(i).data.poke(0.U)
             dut.io.write_ports(i).wave_index.poke(0.U)
-            dut.io.read_addrs(i).poke(0.U)
+
+            // 读取端口必须指向合法的 Bank 地址
+            // Port i 必须读取 Group i (或 i+P, i+2P...)
+            // Group i 的起始地址 = i * groupSize
+            val safeReadAddr = i * p.groupSize
+            dut.io.read_addrs(i).poke(safeReadAddr.U)
         }
     }
 
@@ -92,8 +98,14 @@ class WeightSRAMSpec extends AnyFreeSpec with Matchers with ChiselSim {
                   localOffset = 10
                 ) // 4618
 
-                dut.io.read_addrs(0).poke(logicalAddr0.U)
-                dut.io.read_addrs(1).poke(logicalAddr1.U)
+                // dut.io.read_addrs(0).poke(logicalAddr0.U)
+                // dut.io.read_addrs(1).poke(logicalAddr1.U)
+                // 显式设置所有端口
+                for (i <- 0 until p.P) {
+                    if (i == 0) dut.io.read_addrs(0).poke(logicalAddr0.U)
+                    else if (i == 1) dut.io.read_addrs(1).poke(logicalAddr1.U)
+                    else dut.io.read_addrs(i).poke((i * p.groupSize).U)
+                }
 
                 dut.clock.step(1)
                 // 移除对 T+1 的检查, 因为我们知道 T+1 是读延迟的中间态
@@ -178,7 +190,13 @@ class WeightSRAMSpec extends AnyFreeSpec with Matchers with ChiselSim {
                   waveIndex = 0,
                   localOffset = 100
                 )
-                dut.io.read_addrs(0).poke(logicalAddrA.U)
+                // dut.io.read_addrs(0).poke(logicalAddrA.U)
+
+                // 确保 Port 1..7 也是安全的
+                for (i <- 0 until p.P) {
+                    if (i == 0) dut.io.read_addrs(0).poke(logicalAddrA.U)
+                    else dut.io.read_addrs(i).poke((i * p.groupSize).U)
+                }
 
                 dut.io.write_ports(1).valid.poke(true.B)
                 dut.io.write_ports(1).addr.poke(200.U)

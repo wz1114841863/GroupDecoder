@@ -41,14 +41,14 @@ class WeightSRAM(val p: WeightSRAMParams) extends Module {
 
     // [DEBUG] 打印关键参数,确认容量计算是否生效
     // --- 仅在复位后的第一拍打印 Init 信息 ---
-    val hasPrintedInit = RegInit(false.B)
-    when(!hasPrintedInit) {
-        printf(
-          p"[WeightSRAM Init] TotalWeights=${p.totalWeights}, BankDepth=${p.bankDepth}, AddrWidth=${p.bankAddrWidth}\n"
-        )
-        printf(p"[WeightSRAM Init] P=${p.P}, N=${p.N}, GS=${p.groupSize}\n")
-        hasPrintedInit := true.B
-    }
+    // val hasPrintedInit = RegInit(false.B)
+    // when(!hasPrintedInit) {
+    //     printf(
+    //       p"[WeightSRAM Init] TotalWeights=${p.totalWeights}, BankDepth=${p.bankDepth}, AddrWidth=${p.bankAddrWidth}\n"
+    //     )
+    //     printf(p"[WeightSRAM Init] P=${p.P}, N=${p.N}, GS=${p.groupSize}\n")
+    //     hasPrintedInit := true.B
+    // }
 
     // 1. 实例化 16KB 双缓冲
     // (2 Banks * P=8 Banks * 2048 Depth)
@@ -78,57 +78,35 @@ class WeightSRAM(val p: WeightSRAMParams) extends Module {
     val read_data_wires = Wire(Vec(p.P, UInt(p.weightWidth.W)))
 
     for (i <- 0 until p.P) {
-        // 每个 Bank (i) 只处理来自 read_addrs(i) 的请求
         val logical_addr = io.read_addrs(i)
 
-        // --- 地址解码 ---
-        // 需要确定这个 *逻辑地址* 应该去哪个 *物理 Bank*
+        // 1. 简单的地址转换
+        val wave_index = logical_addr / (p.groupSize * p.P).U // 属于哪一波
+        val local_offset = logical_addr % p.groupSize.U // 组内偏移
+
+        val physical_addr = (wave_index * p.groupSize.U) + local_offset
+
+        // 2. [关键] 验证 1:1 映射假设
+        // 我们假设 logical_addr 对应的 Group ID 必须 模 P 等于 i
         val group_id = logical_addr / p.groupSize.U
-        val local_offset = logical_addr % p.groupSize.U
-
-        // 这个逻辑地址 (logical_addr) 对应的 bank_index
-        val physical_bank_index = (group_id % p.numBanks.U)(
-          log2Ceil(p.numBanks) - 1,
-          0
+        assert(
+          group_id % p.P.U === i.U,
+          "WeightSRAM Access Violation: Port mismatch!"
         )
 
-        // 关键: 这个逻辑地址 (logical_addr) 对应的 bank 内地址
-        val wave_index = group_id / p.numBanks.U
-        val physical_bank_addr = (wave_index * p.groupSize.U) + local_offset
+        // 3. 直接读取 Bank i
+        val data_from_a = bank_a(i).read(physical_addr, true.B)
+        val data_from_b = bank_b(i).read(physical_addr, true.B)
 
-        // 设计假设:
-        // read_addrs(i) 上的逻辑地址总是属于物理 Bank(i)
-
-        // 1. 从 read_addrs(i) 计算物理 bank_addr
-        val logical_addr_for_bank_i = io.read_addrs(i)
-        val group_id_for_bank_i = logical_addr_for_bank_i / p.groupSize.U
-        val local_offset_for_bank_i = logical_addr_for_bank_i % p.groupSize.U
-
-        // 确认这个地址确实属于 Bank i
-        // assert((group_id_for_bank_i % p.numBanks.U) === i.U, "Read address bank mismatch!")
-
-        val wave_index_for_bank_i = group_id_for_bank_i / p.numBanks.U
-        val physical_addr_for_bank_i =
-            (wave_index_for_bank_i * p.groupSize.U) + local_offset_for_bank_i
-
-        // 2. (组合地) 从 Bank A(i) 和 Bank B(i) 读取
-        val data_from_a = bank_a(i).read(physical_addr_for_bank_i, true.B)
-        val data_from_b = bank_b(i).read(physical_addr_for_bank_i, true.B)
-
-        // 3. 使用 'flip' 选择 A 或 B
-        read_data_wires(i) := Mux(
-          io.flip,
-          data_from_a, // flip=1: 读取 Bank A
-          data_from_b // flip=0: 读取 Bank B
-        )
+        read_data_wires(i) := Mux(io.flip, data_from_a, data_from_b)
 
         // [DEBUG]
         // --- [FIX] 2. 优化读取打印 ---
         // 只有在地址发生变化时才打印,或者只打印前几个周期
         // 这里我们使用 RegNext 检测地址变化
 
-        val prev_addr = RegNext(physical_bank_addr)
-        val addr_changed = physical_bank_addr =/= prev_addr
+        // val prev_addr = RegNext(physical_bank_addr)
+        // val addr_changed = physical_bank_addr =/= prev_addr
 
         // 只打印 Port 0 以减少刷屏,且只在地址变化且处于读模式时打印
         // if (i == 0) {

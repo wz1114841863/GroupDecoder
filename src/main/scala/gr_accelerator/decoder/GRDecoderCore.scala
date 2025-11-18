@@ -48,8 +48,8 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
     val io = IO(new GRDecoderCoreIO(p))
 
     // 调试计数器
-    val cycle_count_reg = RegInit(0.U(32.W))
-    cycle_count_reg := cycle_count_reg + 1.U
+    // val cycle_count_reg = RegInit(0.U(32.W))
+    // cycle_count_reg := cycle_count_reg + 1.U
 
     // 实例化子模块
     val gr_decoder = Module(new DecodeUnitGR(p.grDecoderConfig))
@@ -67,11 +67,16 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
     val zero_point_reg = RegInit(0.U(p.zpWidth.W))
     val next_fetch_addr_reg = RegInit(0.U(p.streamAddrWidth.W))
 
+    // 记录初始字节偏移 (0~7)
+    val initial_byte_offset = RegInit(0.U(3.W))
+    // 标记是否是当前组的第一次取数
+    val is_first_fetch = RegInit(false.B)
+    // 标记 Flag 是否已解析
+    val flag_parsed = RegInit(false.B)
+
     // 流式缓冲 寄存器
-    val raw_buffer_reg = RegInit(0.U(p.internalBufferWidth.W)) // 128-bit
-    val bits_valid_in_buffer = RegInit(
-      0.U(p.bufferValidBitsWidth.W)
-    ) // (0..128)
+    val raw_buffer_reg = RegInit(0.U(p.internalBufferWidth.W))
+    val bits_valid_in_buffer = RegInit(0.U(p.bufferValidBitsWidth.W))
 
     // 解码循环控制
     val decoded_count = RegInit(0.U(p.groupCountWidth.W))
@@ -150,9 +155,14 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
                 // )
 
                 // io.meta_req.valid := false.B
+                // 地址对齐处理
+                val raw_addr = io.meta_resp.start_byte_addr
+                // 提取低3位作为 offset (0..7)
+                initial_byte_offset := raw_addr(2, 0)
 
-                // 锁存元数据
-                next_fetch_addr_reg := io.meta_resp.start_byte_addr
+                // 将请求地址向下对齐到 64-bit 边界 (Mask掉低3位)
+                // 例如: 33 (0x21) -> 32 (0x20)
+                next_fetch_addr_reg := raw_addr & (~7.U(p.streamAddrWidth.W))
                 zero_point_reg := io.meta_resp.zero_point
 
                 // printf(
@@ -164,59 +174,144 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
                 // 复位计数器
                 decoded_count := 0.U
                 sram_write_addr := 0.U
+                raw_buffer_reg := 0.U
                 bits_valid_in_buffer := 0.U // 强制进入 sFetchStream
 
-                raw_buffer_reg := 0.U
+                // 标记这是第一次取数,需要处理 offset
+                is_first_fetch := true.B
+
+                // 复位 flag_parsed
+                flag_parsed := false.B
 
                 state := State.sFetchStream
             }
         }
 
+        // is(State.sFetchStream) {
+        //     // 请求下一个 64-bit 块
+        //     io.stream_req.valid := true.B
+        //     io.stream_req.addr := next_fetch_addr_reg
+
+        //     when(io.stream_resp.valid) {
+        //         // *** [DEBUG PRINTF] ***
+        //         // printf(
+        //         //   p"[Core ${coreId}] sFetchStream: LATCHING Stream! " +
+        //         //       p"req_addr=0x${Hexadecimal(next_fetch_addr_reg)}, " +
+        //         //       p"recv_data=0x${Hexadecimal(io.stream_resp.data(63, 32))}...\n"
+        //         // )
+        //         // 收到响应,停止请求
+        //         // io.stream_req.valid := false.B
+
+        //         val raw_data_64 = io.stream_resp.data
+        //         // 处理非对齐数据移位
+        //         // 如果是第一次取数,我们需要右移剔除无效的低字节
+        //         // 假设 Little-Endian: 地址 32 在 bits[7:0], 地址 33 在 bits[15:8]
+        //         // 如果 offset=1 (Start=33), 我们要丢弃 bits[7:0], 保留 [63:8]
+        //         val shift_bits =
+        //             Mux(is_first_fetch, initial_byte_offset << 3, 0.U)
+
+        //         // 1. 将 64-bit 的新数据强制转换为 128-bit UInt
+        //         val new_data_128bit =
+        //             io.stream_resp.data.pad(p.internalBufferWidth)
+
+        //         // 2. 将这个 128-bit 值左移,使其 *左对齐*
+        //         val new_data_padded_to_msb =
+        //             new_data_128bit << (p.internalBufferWidth - p.streamFetchWidth).U
+
+        //         // 移位后的数据 (高位补0)
+        //         val adjusted_data = raw_data_64 >> shift_bits
+
+        //         // 计算这次有效的比特数
+        //         // 正常是 64,第一次可能是 64 - 8*offset
+        //         val valid_bits_in_chunk = 64.U - shift_bits
+
+        //         /// 1. 扩展到 Buffer 宽度
+        //         val new_data_extended = adjusted_data.pad(p.internalBufferWidth)
+
+        //         // 2. 左移对齐到 MSB (模拟 Queue Push)
+        //         // 注意:这里计算 shift 量时,需要确保 buffer 剩下的空间足够
+        //         // 假设 buffer 是从 MSB 填充的
+        //         val push_shift =
+        //             (p.internalBufferWidth.U - p.streamFetchWidth.U) // 这是一个常数吗?
+
+        //         // 先把数据放到最左边 (MSB)
+        //         val data_at_msb =
+        //             new_data_extended << (p.internalBufferWidth.U - valid_bits_in_chunk)
+
+        //         // 再根据当前 buffer 已有的数据量向右移动
+        //         val data_positioned = data_at_msb >> bits_valid_in_buffer
+
+        //         // 更新 Buffer
+        //         raw_buffer_reg := raw_buffer_reg | data_positioned
+
+        //         // 更新计数器
+        //         bits_valid_in_buffer := bits_valid_in_buffer + valid_bits_in_chunk
+
+        //         // 更新地址 (始终 +8, 因为我们是对齐读取)
+        //         next_fetch_addr_reg := next_fetch_addr_reg + p.streamFetchWidthBytes.U
+
+        //         // 清除标志位,后续取数不再移位
+        //         is_first_fetch := false.B
+
+        //         // printf(
+        //         //   p"  [sFetchStream] RESP Valid. Received_data: 0x${Hexadecimal(io.stream_resp.data)}. " +
+        //         //       p"BitsValid_Before: ${bits_valid_in_buffer}. " +
+        //         //       p"Merged_raw_buffer: 0x${Hexadecimal(raw_buffer_reg | new_data_shifted)}\n"
+        //         // )
+
+        //         // 判断下一步
+        //         when(!flag_parsed) {
+        //             state := State.sParseFlag
+        //         }.otherwise {
+        //             state := State.sDecode_Exec
+        //         }
+        //     }
+        // }
+
         is(State.sFetchStream) {
-            // 请求下一个 64-bit 块
             io.stream_req.valid := true.B
             io.stream_req.addr := next_fetch_addr_reg
 
             when(io.stream_resp.valid) {
-                // *** [DEBUG PRINTF] ***
-                // printf(
-                //   p"[Core ${coreId}] sFetchStream: LATCHING Stream! " +
-                //       p"req_addr=0x${Hexadecimal(next_fetch_addr_reg)}, " +
-                //       p"recv_data=0x${Hexadecimal(io.stream_resp.data(63, 32))}...\n"
-                // )
-                // 收到响应,停止请求
-                // io.stream_req.valid := false.B
+                val raw_data_64 = io.stream_resp.data
 
-                // 1. 将 64-bit 的新数据强制转换为 128-bit UInt
-                val new_data_128bit =
-                    io.stream_resp.data.pad(p.internalBufferWidth)
+                // [FINAL FIX] 字节序翻转 (Byte Swap)
+                // 现状: Little Endian Load. Addr 0 (Head) 在 LSB [7:0].
+                // 目标: Stream Processing. Head 必须在 MSB [63:56].
+                // 操作: 把 raw_data_64 的字节顺序完全颠倒过来.
 
-                // 2. 将这个 128-bit 值左移,使其 *左对齐*
-                val new_data_padded_to_msb =
-                    new_data_128bit << (p.internalBufferWidth - p.streamFetchWidth).U
+                // 1. 拆分字节
+                val bytes = VecInit(
+                  Seq.tabulate(8)(i => raw_data_64((i + 1) * 8 - 1, i * 8))
+                )
 
-                // 3. 将这个对齐的值右移,
-                // 使其紧跟在已有的 "bits_valid_in_buffer" 之后
+                // 2. 逆序拼接: Cat(b0, b1, ... b7)
+                // Cat 把第一个参数放在最高位.所以 b0 (Addr 0, Head) 去到了 MSB.
+                val reversed_data = Cat(bytes)
 
-                val new_data_shifted =
-                    new_data_padded_to_msb >> bits_valid_in_buffer
+                // --- 后续逻辑使用 reversed_data ---
 
-                raw_buffer_reg := raw_buffer_reg | new_data_shifted
+                // Offset 处理: 现在垃圾(如果有)位于高位(MSB), 使用左移丢弃
+                val shift_bits =
+                    Mux(is_first_fetch, initial_byte_offset << 3, 0.U)
+                val adjusted_data = reversed_data << shift_bits
 
-                // 更新有效比特计数器
-                bits_valid_in_buffer := bits_valid_in_buffer + p.streamFetchWidth.U
+                val valid_bits_in_chunk = 64.U - shift_bits
 
-                // 更新下一个 Fetch 地址
+                // 归位: 将 64-bit 数据对齐到 96-bit Buffer 的顶端
+                // adjusted_data 已经是 MSB 对齐的了
+                val data_at_buffer_msb = adjusted_data.asUInt.pad(
+                  p.internalBufferWidth
+                ) << (p.internalBufferWidth - 64)
+                val data_positioned = data_at_buffer_msb >> bits_valid_in_buffer
+
+                raw_buffer_reg := raw_buffer_reg | data_positioned
+                bits_valid_in_buffer := bits_valid_in_buffer + valid_bits_in_chunk
+
                 next_fetch_addr_reg := next_fetch_addr_reg + p.streamFetchWidthBytes.U
+                is_first_fetch := false.B
 
-                // printf(
-                //   p"  [sFetchStream] RESP Valid. Received_data: 0x${Hexadecimal(io.stream_resp.data)}. " +
-                //       p"BitsValid_Before: ${bits_valid_in_buffer}. " +
-                //       p"Merged_raw_buffer: 0x${Hexadecimal(raw_buffer_reg | new_data_shifted)}\n"
-                // )
-
-                // 判断下一步
-                when(decoded_count === 0.U) {
+                when(!flag_parsed) {
                     state := State.sParseFlag
                 }.otherwise {
                     state := State.sDecode_Exec
@@ -249,7 +344,14 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
             raw_buffer_reg := raw_buffer_reg << flag_bits.U
             bits_valid_in_buffer := bits_valid_in_buffer - flag_bits.U
 
+            // 标记 Flag 已解析
+            flag_parsed := true.B
             state := State.sDecode_Exec
+
+            // [DEBUG]
+            // printf(
+            //   p"[Core $coreId] Parse Flag: RawBufferTop=${Binary(raw_buffer_reg >> (p.internalBufferWidth - 8))} Flag=$flag (0=k1, 1=k2, 2=FB)\n"
+            // )
         }
 
         is(State.sDecode_Exec) {
@@ -320,12 +422,6 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
                 val final_weight_calc =
                     (signed_delta + zero_point_pipe_reg.zext.asSInt).asUInt
 
-                // printf(
-                //   p"[DUT Core ${coreId}] [C=${cycle_count_reg}] sDecode_Post: CALCULATING -> " +
-                //       p"k_pipe: ${k_in_pipe_reg}, zp_pipe: ${zero_point_pipe_reg}, q_pipe: ${q_pipe_reg}, r_pipe: ${r_pipe_reg}\n" +
-                //       p"  -> k_val=${k_val}, mapped_delta=${mapped_delta}, signed_delta=${signed_delta}, FINAL_WEIGHT=${final_weight_calc}\n"
-                // )
-
                 // 直接赋值
                 io.sram_write.data := final_weight_calc
 
@@ -349,6 +445,12 @@ class GRDecoderCore(val p: GRDecoderCoreParams, val coreId: UInt)
             // 消耗 128-bit 缓冲
             raw_buffer_reg := raw_buffer_reg << consumed_bits_reg
             bits_valid_in_buffer := bits_valid_in_buffer - consumed_bits_reg
+
+            // [DEBUG ADDED] 打印写入 SRAM 的权重值
+            // 这可以验证: 1. 解码是否正确 2. ZP 是否加上了
+            // printf(
+            //   p"[Core $coreId] Write SRAM: Addr=$sram_write_addr Data=${io.sram_write.data} (ZP used=${zero_point_pipe_reg})\n"
+            // )
         }
 
         is(State.sDone) {

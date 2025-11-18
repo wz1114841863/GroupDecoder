@@ -44,7 +44,7 @@ class MetaSRAMBuffer(val p: MetaSRAMParams = MetaSRAMParams.default)
     val zp_mem_B = SyncReadMem(p.N, UInt(p.zpWidth.W))
     val scale_mem_B = SyncReadMem(p.N, UInt(p.scaleWidth.W))
 
-    // --- [FIXED] 状态控制 ---
+    // --- 状态控制 ---
     // 直接使用输入的电平信号,不再使用内部翻转逻辑
     // io.flip = false => active_bank_is_B = false (生产者写 A, 消费者读 B)
     // io.flip = true  => active_bank_is_B = true  (生产者写 B, 消费者读 A)
@@ -98,4 +98,35 @@ class MetaSRAMBuffer(val p: MetaSRAMParams = MetaSRAMParams.default)
     // WeightSRAM: flip=1 -> Read A. (Correct)
     io.read_zp := Mux(active_bank_is_B, zp_out_A, zp_out_B)
     io.read_scale := Mux(active_bank_is_B, scale_out_A, scale_out_B)
+
+    // --- [DEBUG] Monitoring ---
+    // 1. 监控写入
+    for (i <- 0 until p.P) {
+        when(io.zp_write_ports(i).valid) {
+            // !active_bank_is_B (flip=0) => 写 A (0)
+            // active_bank_is_B  (flip=1) => 写 B (1)
+            val target_bank = Mux(!active_bank_is_B, 0.U, 1.U)
+            printf(
+              p"[MetaSRAM] Write Port $i: ZP=${io.zp_write_ports(i).zp} into Bank $target_bank (0=A, 1=B) (Flip=${io.flip})\n"
+            )
+        }
+    }
+
+    // 2. 监控读取
+    val prev_read_addr = RegNext(io.read_addr)
+    when(io.read_addr =/= prev_read_addr) {
+        // active_bank_is_B (flip=1) => 读 A (0)
+        // !active_bank_is_B (flip=0) => 读 B (1)
+        val source_bank = Mux(active_bank_is_B, 0.U, 1.U)
+        printf(
+          p"[MetaSRAM] Read Req: Addr=${io.read_addr} from Bank $source_bank (0=A, 1=B) (Flip=${io.flip})\n"
+        )
+    }
+
+    // 3. 监控输出数据
+    val prev_read_addr_d = RegNext(prev_read_addr)
+    val addr_changed_d = RegNext(io.read_addr =/= prev_read_addr)
+    when(addr_changed_d) {
+        printf(p"[MetaSRAM] Read Data: ZP=${io.read_zp}\n")
+    }
 }

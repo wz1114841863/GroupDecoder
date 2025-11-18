@@ -57,8 +57,9 @@ class PE(val p: PEParams = PEParams.default) extends Module {
         reg_zp := io.in_zp
         reg_scale := io.in_scale
 
-        // [DEBUG]
-        // printf(p"[PE] Loading: W=$io.in_weight ZP=$io.in_zp\n")
+        // [DEBUG ADDED]
+        // 只有当 ZP 看起来不对劲(比如是 9)的时候打印,或者一直打印
+        // printf(p"[PE Load] Got ZP=$io.in_zp\n")
     }
 
     // 始终输出当前存储的权重给下一级,支持链式加载
@@ -79,4 +80,13 @@ class PE(val p: PEParams = PEParams.default) extends Module {
 
     reg_sum := sum_next
     io.out_sum := reg_sum // 传给下方
+
+    // [DEBUG ADDED] 打印 PE 内部状态
+    // 为了避免刷屏,我们可以加一个条件,比如只打印非零的计算
+    // when(io.ctrl_load_en === false.B && (reg_act =/= 0.S || reg_sum =/= 0.S)) {
+    //     // 打印: 权重 * 激活 + 旧Sum = 新Sum
+    //     printf(
+    //       p"[PE] Calc: W($reg_weight) * A($reg_act) + SumIn(${io.in_sum}) -> SumOut($reg_sum)\n"
+    //     )
+    // }
 }

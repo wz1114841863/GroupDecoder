@@ -93,7 +93,11 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
 
     /** SharedFrontend (内部) 2KB 共享缓存 (字节寻址)
       */
-    val shared_cache = Mem(p.sharedCacheKBytes * 1024, UInt(8.W))
+    // 将 SharedCache 改为 64-bit 宽 (Vec of 8 Bytes)
+    // 这模拟了真实的 64-bit 宽 SRAM, 并支持字节级写入掩码
+    // 深度 = 总字节数 / 8
+    val shared_cache_depth = (p.sharedCacheKBytes * 1024) / 8
+    val shared_cache = Mem(shared_cache_depth, Vec(8, UInt(8.W)))
 
     // --- 3. 内存加载 逻辑 (用于测试) ---
 
@@ -106,7 +110,18 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
     // 共享缓存 加载
     io.load_stream.ready := true.B // 总是准备好接收
     when(io.load_stream.valid) {
-        shared_cache.write(io.load_stream.bits.addr, io.load_stream.bits.data)
+        val byte_addr = io.load_stream.bits.addr
+        val word_idx = byte_addr >> 3 // 除以 8
+        val byte_offset = byte_addr(2, 0) // 0..7
+
+        // 构造写入数据: 将 byte 广播到所有位置
+        val write_data = VecInit(Seq.fill(8)(io.load_stream.bits.data))
+
+        // 构造掩码: 只有对应的字节位置为 true
+        val write_mask = VecInit(Seq.tabulate(8)(i => i.U === byte_offset))
+
+        // 使用带掩码的写入
+        shared_cache.write(word_idx, write_data, write_mask)
     }
 
     // --- 4. 连接 (仲裁器) ---
@@ -138,11 +153,17 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
     val stream_req_addr = stream_arb.io.out.bits.addr
     val stream_req_chosen = stream_arb.io.chosen
 
-    val stream_read_data = Cat(
-      (0 until p.coreParams.streamFetchWidthBytes).map { i =>
-          shared_cache(stream_req_addr + i.U)
-      }
-    )
+    // 读取 64-bit 向量
+    // Core 已经保证了发出的 stream_req_addr 是 64-bit 对齐的 (低3位为0)
+    val word_idx_read = stream_req_addr >> 3
+    val read_vec = shared_cache(word_idx_read)
+
+    // 拼接为 64-bit UInt (Little-Endian)
+    // Vec(0) 是低地址字节 -> 放在 LSB
+    // Vec(7) 是高地址字节 -> 放在 MSB
+    // Cat(v7, v6, ... v0) -> 结果是 v7..v0
+    val stream_read_data = Cat(read_vec.reverse)
+
     stream_arb.io.out.ready := true.B
 
     // --- FSM 定义 ---
@@ -328,9 +349,7 @@ class DecoderBank(val p: DecoderBankParams) extends Module {
 
         is(State.sDone) {
             io.bank_finished := true.B
-            when(io.start_req.ready) { // (等待 Top 确认)
-                state := State.sIdle
-            }
+            state := State.sIdle
         }
     }
 }
