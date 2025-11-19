@@ -5,6 +5,7 @@ test_run_dir/*
 tmp/
 .vscode/
 .metals/
+generated/*
 
 ### XilinxISE template
 # intermediate build files

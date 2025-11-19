@@ -4,9 +4,9 @@ import chisel3._
 import chisel3.util._
 import gr_accelerator.common.GRDecoderConfig
 
-/** GR 解码器组合逻辑 核心的 IO 端口. 它继承了 HasGRDecoderConfig 以访问所有参数.
+/** GR 解码器组合逻辑核心的 IO 端口.
   */
-class DecodeUnitGR_IO(val p: GRDecoderConfig) extends Bundle {
+class DecodeUnitGRIO(val p: GRDecoderConfig) extends Bundle {
     // --- 输入 ---
     // 来自 FSM 的已对齐的块
     val aligned_chunk = Input(UInt(p.grChunkWidth.W))
@@ -15,6 +15,7 @@ class DecodeUnitGR_IO(val p: GRDecoderConfig) extends Bundle {
     val k_in = Input(UInt(p.grKInWidth.W))
 
     // --- 输出 ---
+    // 最终的 q 和 r 值
     val final_q = Output(UInt(p.grQValWidth.W))
     val final_r = Output(UInt(p.grRValWidth.W))
 
@@ -28,7 +29,7 @@ class DecodeUnitGR_IO(val p: GRDecoderConfig) extends Bundle {
 /** GR 解码器组合逻辑核心, 实现GR解码的快慢路径逻辑.
   */
 class DecodeUnitGR(val p: GRDecoderConfig) extends Module {
-    val io = IO(new DecodeUnitGR_IO(p))
+    val io = IO(new DecodeUnitGRIO(p))
 
     // 模块的"k"值 (1.U 或 2.U)
     val k_val = io.k_in + 1.U(p.grKValWidth.W)
@@ -156,16 +157,6 @@ class DecodeUnitGR(val p: GRDecoderConfig) extends Module {
         val inverted_vec = inverted_q_stream.asBools
         // 使用 PriorityEncoder 找到第一个 'T' 的索引
         val q = PriorityEncoder(inverted_vec.reverse)
-
-        // *** [DEBUG PRINTF] ***
-        // p"...": 这是一个 Chisel printf, 它可以打印硬件信号
-        // printf(p"--- [MicroDecoder DEBUG] ---\n")
-        // printf(p"  Slow Path Activated (k_in = ${io.k_in})\n")
-        // printf(p"  q_stream (raw 16b):     0b${Binary(q_stream)}\n")
-        // printf(p"  inverted_q_stream (16b): 0b${Binary(inverted_q_stream)}\n")
-        // printf(p"  q_is_valid (must be T): ${q_is_valid}\n")
-        // printf(p"  q (from PriorityEncoder): ${q}\n")
-        // printf(p"------------------------------\n")
 
         when(q_is_valid) {
             slow_path_q := q

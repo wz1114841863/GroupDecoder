@@ -3,7 +3,7 @@ package gr_accelerator.common
 import chisel3._
 import chisel3.util._
 
-/** 定义 GR 解码器核心 (DecodeUnit_GR) 的所有可配置参数
+/** 定义 GR 解码器核心 (DecodeUnitGR) 的所有可配置参数
   */
 case class GRDecoderConfig(
     // 通过分析: 映射后最大 delta=30, q=15, k=1
