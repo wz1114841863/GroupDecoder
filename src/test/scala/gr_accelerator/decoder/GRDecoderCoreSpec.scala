@@ -25,6 +25,7 @@ class GRDecoderCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
         // 它涵盖了: 字节序/非对齐访问/数据解析
         "should handle UNALIGNED memory access with Little-Endian layout" in {
             implicit val p = GRDecoderCoreParams.default
+            // val p = GRDecoderCoreParams.default.copy(useSingleCycleLoop = true)
 
             // ==================================================================
             // 1. 准备黄金数据
@@ -145,7 +146,7 @@ class GRDecoderCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
                 capturedWeights(1) must be(goldenWeights(1))
                 capturedWeights(2) must be(goldenWeights(2))
                 println(
-                  s"Corrected Test (Offset=1) Passed. Hardware correctly handled LE input."
+                  s"Corrected Test (Offset=1) Passed. cycles $cycles."
                 )
             }
 
@@ -204,7 +205,7 @@ class GRDecoderCoreSpec extends AnyFreeSpec with Matchers with ChiselSim {
                 cycles must be < timeout
                 // 验证前3个权重
                 capturedWeights(0) must be(goldenWeights(0))
-                println(s"Corrected Test (Offset=7) Passed.")
+                println(s"Corrected Test (Offset=7) Passed. cycles $cycles.")
             }
         }
     }

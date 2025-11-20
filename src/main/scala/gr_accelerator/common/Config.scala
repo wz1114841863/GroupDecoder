@@ -3,7 +3,7 @@ package gr_accelerator.common
 import chisel3._
 import chisel3.util._
 
-/** 定义 GR 解码器核心 (DecodeUnitGR) 的所有可配置参数
+/** DecodeUnitGR的可配置参数
   */
 case class GRDecoderConfig(
     // 通过分析: 映射后最大 delta=30, q=15, k=1
@@ -99,7 +99,9 @@ object GRDecoderConfig {
   * @param streamFetchWidthBytes
   *   每次获取的字节数 (用于地址递增)
   * @param groupBitOffsetWidth
-  *   组 内总比特偏移 计数器宽度
+  *   组内总比特偏移 计数器宽度
+  * @param useSingleCycleLoop
+  *   是否启用单周期快速解码模式
   */
 case class GRDecoderCoreParams(
     grDecoderConfig: GRDecoderConfig,
@@ -120,7 +122,8 @@ case class GRDecoderCoreParams(
     groupCountWidth: Int,
     bufferValidBitsWidth: Int,
     streamFetchWidthBytes: Int,
-    groupBitOffsetWidth: Int
+    groupBitOffsetWidth: Int,
+    useSingleCycleLoop: Boolean
 )
 
 object GRDecoderCoreParams {
@@ -133,8 +136,8 @@ object GRDecoderCoreParams {
         internalBufferWidth: Int = 96, // 64 + 20 < 96
         metaGroupIndexWidth: Int = 16, // 可支持 65536 组
         streamAddrWidth: Int = 32, // 32-bit 字节地址
-        groupBitOffsetWidth: Int = 24 // 组 内最大比特偏移
-
+        groupBitOffsetWidth: Int = 24, // 组内最大比特偏移
+        useSingleCycleLoop: Boolean = false
     ): GRDecoderCoreParams = {
 
         val outputSramAddrWidth = log2Ceil(groupSize) // e.g., 9
@@ -155,7 +158,8 @@ object GRDecoderCoreParams {
           groupCountWidth,
           bufferValidBitsWidth,
           streamFetchWidthBytes,
-          groupBitOffsetWidth
+          groupBitOffsetWidth,
+          useSingleCycleLoop
         )
     }
 

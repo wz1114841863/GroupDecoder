@@ -11,13 +11,11 @@ class StreamReqPayload(val p: GRDecoderCoreParams) extends Bundle {
     val addr = UInt(p.streamAddrWidth.W)
 }
 
-/** DecoderBank (顶层分发模块) 的 IO 端口
+/** DecoderBank IO
   */
 class DecoderBankIO(val p: DecoderBankParams) extends Bundle {
 
     /** 控制端口 (来自 TopAccelerator 或测试 平台)
-      *
-      * 使用 Decoupled (valid/ready) 握手协议
       */
     val start_req = Flipped(Decoupled(new Bundle {
         val base_group_index = UInt(p.coreParams.metaGroupIndexWidth.W)
@@ -40,9 +38,7 @@ class DecoderBankIO(val p: DecoderBankParams) extends Bundle {
         val data = UInt(8.W) // 一次写 1 字节
     }))
 
-    /** 数据输出 (去往 SystolicArray)
-      *
-      * 暴露 P=8 个并行的 SRAM 写入端口
+    /** 数据输出 (去往 SystolicArray), 暴 P个写入端口
       */
     val sram_write_outputs = Output(
       Vec(
@@ -62,11 +58,9 @@ class DecoderBankIO(val p: DecoderBankParams) extends Bundle {
         new Bundle {
             val valid = Bool()
             val zp = UInt(p.coreParams.zpWidth.W)
-            // 我们需要输出 wave_index 以便外部知道写到哪里
+            // 需要输出 wave_index 以便外部知道写到哪里
             // 这里的宽度应与 FSM 中的计数器宽度匹配 (目前设为 8.W)
-            val wave_index = UInt(8.W) // 假设 8-bit 足够 (支持 256 波)
-            // (可选) 如果以后需要输出 group_index 或 bank_addr,也可以加在这里
-            // val addr = ...
+            val wave_index = UInt(8.W) // 假设 8-bit 足够 (支持 256 波).
         }
       )
     )
