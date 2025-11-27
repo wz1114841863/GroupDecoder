@@ -2,7 +2,6 @@ package gr_accelerator.systolic
 
 import chisel3._
 import chisel3.util._
-
 import gr_accelerator.common._
 
 class WeightLoaderIO(val p: WeightSRAMParams) extends Bundle {
@@ -10,8 +9,7 @@ class WeightLoaderIO(val p: WeightSRAMParams) extends Bundle {
     val start = Input(Bool())
     val done = Output(Bool())
 
-    // 使用 saReadAddrWidth (例如 14-bit), 因为 sramAddrWidth (9-bit) 不足以存储 Group ID
-    // 瓦片在 SRAM 中的起始逻辑 Group ID
+    // 使用 saReadAddrWidth
     val base_group_idx = Input(UInt(p.saReadAddrWidth.W))
 
     // --- 连接 WeightSRAM (读) ---
@@ -26,121 +24,100 @@ class WeightLoaderIO(val p: WeightSRAMParams) extends Bundle {
 class WeightLoader(val p: WeightSRAMParams) extends Module {
     val io = IO(new WeightLoaderIO(p))
 
-    // 强制对齐断言
-    // 确保起始 Group ID 是 P 的整数倍
-    if (p.P > 1) {
-        // 只有当 base_group_idx 的低 log2(P) 位为 0 时才合法
-        assert(
-          io.base_group_idx(log2Ceil(p.P) - 1, 0) === 0.U,
-          "WeightLoader base_group_idx must be aligned to P!"
-        )
-    }
-
     val N = p.N
     val P = p.P
     val SubBlocks = N / P
 
+    val SRAM_LATENCY = 2
+
+    if (P > 1) {
+        assert(
+          io.base_group_idx(log2Ceil(P) - 1, 0) === 0.U,
+          "WeightLoader base_group_idx must be aligned to P!"
+        )
+    }
+
     object State extends ChiselEnum {
-        val sIdle, sRead, sWait, sLatchData, sPush, sDone = Value
+        val sIdle, sBurst, sDrain, sDone = Value
     }
     val state = RegInit(State.sIdle)
 
-    // 计数器
-    val row_idx = Reg(UInt(log2Ceil(N + 1).W))
-    val chunk_idx = Reg(UInt(log2Ceil(SubBlocks + 1).W))
+    val req_row_idx = RegInit(0.U(log2Ceil(N).W))
+    val req_chunk_idx = RegInit(0.U(log2Ceil(SubBlocks).W))
+    val resp_row_idx = RegInit(0.U(log2Ceil(N).W))
+    val resp_chunk_idx = RegInit(0.U(log2Ceil(SubBlocks).W))
+    val inflight_cnt = RegInit(
+      0.U(log2Ceil(N * SubBlocks + SRAM_LATENCY + 1).W)
+    )
 
-    // 行缓冲
     val row_buffer = Reg(Vec(N, UInt(p.weightWidth.W)))
+    val load_en_reg = RegInit(false.B)
 
-    // 默认输出
     io.done := false.B
-    io.array_load_en := false.B
+
+    io.array_load_en := load_en_reg
     io.array_w_in := row_buffer
 
-    for (i <- 0 until P) {
-        io.sram_read_addrs(i) := (i * p.groupSize).U
+    val req_valid = (state === State.sBurst)
+    val data_valid = ShiftRegister(req_valid, SRAM_LATENCY, false.B, true.B)
+
+    // --- 统一处理 inflight_cnt 更新 ---
+    val req_fired = req_valid
+    when(req_fired && !data_valid) {
+        inflight_cnt := inflight_cnt + 1.U
+    }.elsewhen(!req_fired && data_valid) {
+        inflight_cnt := inflight_cnt - 1.U
+    }.otherwise {
+        inflight_cnt := inflight_cnt
     }
+
+    // 默认: 每一拍自动拉低 (产生脉冲)
+    load_en_reg := false.B
+
+    for (i <- 0 until P) io.sram_read_addrs(i) := (i * p.groupSize).U
+
+    // --- 调试打印 ---
+    // when(load_en_reg) {
+    //     printf(p"[WeightLoader] Push Row: ${row_buffer}\n")
+    // }
 
     switch(state) {
         is(State.sIdle) {
             when(io.start) {
-                state := State.sRead
-                row_idx := 0.U
-                chunk_idx := 0.U
+                state := State.sBurst
+                req_row_idx := 0.U
+                req_chunk_idx := 0.U
+                resp_row_idx := 0.U
+                resp_chunk_idx := 0.U
             }
         }
 
-        is(State.sRead) {
-            // 发起 P 个并行读取
-            // 目标: 读取当前行 (row_idx) 在 P 个不同列 (Groups) 中的值
-            // 当前块覆盖的列范围: [chunk_idx*P, (chunk_idx+1)*P - 1]
+        is(State.sBurst) {
             for (i <- 0 until P) {
-                // 1. 计算当前的逻辑 Group ID
-                //    = 基础 Group + (当前块 * 每块P列) + 当前端口偏移
                 val current_group_id =
-                    io.base_group_idx + (chunk_idx * P.U) + i.U
-
-                // 2. 计算发送给 WeightSRAM 的逻辑地址
-                //    WeightSRAM 会自动将其映射到物理 Bank
-                //    Addr = (Group_ID * GroupSize) + Row_Index
+                    io.base_group_idx + (req_chunk_idx * P.U) + i.U
                 io.sram_read_addrs(
                   i
-                ) := (current_group_id * p.groupSize.U) + row_idx
+                ) := (current_group_id * p.groupSize.U) + req_row_idx
             }
 
-            // WeightSRAM 延迟 = 2 (SyncReadMem + RegNext)
-            // sRead (Req) -> sWait (Wait) -> sLatchData (Valid)
-            state := State.sWait
+            val req_chunk_wrap = req_chunk_idx === (SubBlocks - 1).U
+            val req_row_wrap = req_row_idx === (N - 1).U
 
-            // printf(
-            //   p"[WeightLoader] Chunk $chunk_idx: Requesting Group ${io.base_group_idx + (chunk_idx * P.U)} (Row $row_idx)\n"
-            // )
-        }
+            req_chunk_idx := Mux(req_chunk_wrap, 0.U, req_chunk_idx + 1.U)
 
-        is(State.sWait) {
-            // 等待 1 周期
-            state := State.sLatchData
-        }
-
-        is(State.sLatchData) {
-            // 锁存数据
-            val base_pos = chunk_idx * P.U
-            for (i <- 0 until P) {
-                val full_idx = base_pos +& i.U
-                val truncated_idx = full_idx(log2Ceil(N) - 1, 0)
-                row_buffer(truncated_idx) := io.sram_read_data(i)
+            when(req_chunk_wrap) {
+                req_row_idx := req_row_idx + 1.U
             }
 
-            // 检查是否读完一行的所有块
-            if (SubBlocks == 1) {
-                state := State.sPush
-                chunk_idx := 0.U
-            } else {
-                when(chunk_idx === (SubBlocks - 1).U) {
-                    state := State.sPush
-                    chunk_idx := 0.U
-                }.otherwise {
-                    state := State.sRead // 继续读下一块
-                    chunk_idx := chunk_idx + 1.U
-                }
+            when(req_chunk_wrap && req_row_wrap) {
+                state := State.sDrain
             }
         }
 
-        is(State.sPush) {
-            // 推送一行到阵列
-            io.array_load_en := true.B
-
-            // [DEBUG]
-            // printf(p"[WeightLoader] Pushing Row $row_idx to Array:\n")
-            // printf(p"  W[0]=${row_buffer(0)} W[1]=${row_buffer(1)} ...\n")
-            // printf(p"  W[2]=${row_buffer(2)} W[3]=${row_buffer(3)} ...\n")
-
-            // 检查是否完成所有行
-            when(row_idx === (N - 1).U) {
+        is(State.sDrain) {
+            when(inflight_cnt === 0.U) {
                 state := State.sDone
-            }.otherwise {
-                state := State.sRead
-                row_idx := row_idx + 1.U
             }
         }
 
@@ -149,6 +126,31 @@ class WeightLoader(val p: WeightSRAMParams) extends Module {
             when(!io.start) {
                 state := State.sIdle
             }
+        }
+    }
+
+    when(data_valid) {
+        val base_pos = resp_chunk_idx * P.U
+
+        for (i <- 0 until P) {
+            val full_idx = base_pos +& i.U
+            val truncated_idx = full_idx(log2Ceil(N) - 1, 0)
+
+            if (i + (SubBlocks - 1) * P < N) {
+                row_buffer(truncated_idx) := io.sram_read_data(i)
+            } else {
+                when(full_idx < N.U) {
+                    row_buffer(truncated_idx) := io.sram_read_data(i)
+                }
+            }
+        }
+
+        val resp_chunk_wrap = resp_chunk_idx === (SubBlocks - 1).U
+        resp_chunk_idx := Mux(resp_chunk_wrap, 0.U, resp_chunk_idx + 1.U)
+
+        when(resp_chunk_wrap) {
+            resp_row_idx := resp_row_idx + 1.U
+            load_en_reg := true.B
         }
     }
 }
